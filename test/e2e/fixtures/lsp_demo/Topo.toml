@@ -1,0 +1,10 @@
+[project]
+name = "lsp_demo"
+
+[topo]
+root = "topo/game.topo"
+
+[build]
+sources = ["src/*.cpp"]
+standard = "c++17"
+output = "lsp_demo"

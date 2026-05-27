@@ -1,0 +1,7 @@
+// types.topo — shared type declarations
+
+using int = std::cpp17::int;
+
+std::import("game_types.h", Entity);
+std::import("game_types.h", Transform);
+std::import("game_types.h", Color);

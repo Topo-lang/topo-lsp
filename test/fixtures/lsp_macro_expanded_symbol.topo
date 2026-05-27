@@ -1,0 +1,11 @@
+// Fixture: symbol declared via host-side macro (#define).
+// The .topo simply declares the macro-expanded name; the host C++ will
+// produce the actual function via `#define EXPORT_NAME foo_v2`.
+// Exercises the LSP's robustness when the host symbol table is shaped by
+// preprocessor expansion rather than direct declaration.
+namespace macros {
+    public:
+        // Host: #define EXPORT_NAME foo_v2
+        // void EXPORT_NAME() { ... }
+        void foo_v2();
+}

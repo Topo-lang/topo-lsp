@@ -1,0 +1,38 @@
+// renderer.topo — rendering pipeline
+// WARNING: line positions are anchored by test_lsp_demo.py — avoid edits
+//
+import types;
+
+using int = std::cpp17::int;
+
+namespace render {
+  public:
+    void begin_frame();
+    void end_frame();
+    void draw_sprite(int id, int x, int y);
+    void draw_text(int x, int y);
+    void set_viewport(int w, int h);
+    void clear_screen(int color);
+
+  private:
+    void flush_batch();
+    void swap_buffers();
+    void bind_texture(int id);
+    void unbind_texture();
+    void set_blend_mode(int mode);
+    void reset_state();
+
+  public:
+    void render_frame(int scene_id);
+
+    fn render_frame {
+      // Phase 1: Setup
+      clear_screen(0);
+      set_viewport(1920, 1080);
+
+      // Phase 2: Render
+      begin_frame();
+      draw_sprite(1, 100, 200);
+      end_frame();
+    }
+}

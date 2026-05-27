@@ -1,0 +1,29 @@
+// math.topo — vector math operations
+// WARNING: line positions are anchored by test_lsp.py — avoid edits
+//
+import types;
+
+using int = std::cpp17::int;
+
+namespace math::vec {
+  public:
+    // Basic vector operations
+    int dot(int x1, int y1, int x2, int y2);
+    int cross_z(int x1, int y1, int x2, int y2);
+    int magnitude_sq(int x, int y);
+
+    // Transformation
+    int rotate_x(int x, int y, int angle);
+    int rotate_y(int x, int y, int angle);
+    int scale_x(int x, int factor);
+    int scale_y(int y, int factor);
+
+    // Distance
+    int distance_sq(int x1, int y1, int x2, int y2);
+    int manhattan(int x1, int y1, int x2, int y2);
+
+    // Vec2i operations
+    int vec_length_sq(int x, int y);
+    Vec2i vec_add(const Vec2i& a, const Vec2i& b);
+    Vec2i vec_sub(const Vec2i& a, const Vec2i& b);
+}

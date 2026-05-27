@@ -1,0 +1,18 @@
+// game.topo — game logic
+
+import types;
+import engine;
+import renderer;
+
+using int = std::cpp17::int;
+
+namespace game {
+  public:
+    void start();
+    void stop();
+    void main_loop();
+
+  private:
+    void load_assets();
+    void create_scene();
+}

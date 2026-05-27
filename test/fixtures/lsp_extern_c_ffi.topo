@@ -1,0 +1,10 @@
+// Fixture: extern "C" FFI block on the host side.
+// Host C++: extern "C" { int legacy_init(); void legacy_shutdown(); }
+// The .topo declares the C-linkage surface at the topo namespace level.
+using Int = std::cpp17::int32_t;
+
+namespace ffi {
+    public:
+        Int legacy_init();
+        void legacy_shutdown();
+}

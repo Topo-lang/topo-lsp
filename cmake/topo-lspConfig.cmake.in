@@ -1,0 +1,45 @@
+@PACKAGE_INIT@
+
+# topo-lsp CMake package config.
+#
+# Consumers do:
+#     find_package(topo-lsp CONFIG REQUIRED)
+#     target_link_libraries(my-lsp-host PRIVATE topo::lsp::TopoLSPLib)
+# and either embed the LSP server library (TopoLSPLib) or spawn the
+# installed `topo-lsp` executable as a JSON-RPC subprocess.
+#
+# The set of language plugins TopoLSPLib links is fixed at the time
+# topo-lsp was built: each TOPO_LSP_WITH_<LANG>_PLUGIN compile def
+# baked into TopoLSPLib reflects which plugin aggregator targets were
+# linked, and the matching topo-lang-<lang> package is recorded in
+# this Config.cmake so find_dependency rehydrates them at consume
+# time.
+
+include(CMakeFindDependencyMacro)
+
+find_dependency(topo-core CONFIG)
+find_dependency(topo-lang CONFIG)
+find_dependency(nlohmann_json CONFIG)
+
+# Re-find each language plugin package that was linked at build time.
+# These names are pasted in by configure_package_config_file at install
+# time so the consumer doesn't have to know which subset was on.
+set(_TOPO_LSP_LINKED_PLUGINS "@_TOPO_LSP_RESOLVED_PLUGINS@")
+foreach(entry IN LISTS _TOPO_LSP_LINKED_PLUGINS)
+    string(REPLACE ":" ";" _parts "${entry}")
+    list(GET _parts 0 _lang_lower)
+    find_dependency(topo-lang-${_lang_lower} CONFIG)
+endforeach()
+
+# topo-v8 is brought in transitively when the TypeScript plugin was
+# linked (TsServerBridge lives in topo-v8/lib/TsServer/); the
+# topo-lang-typescript Config already find_dependency's topo-v8, but
+# we re-list it here so consumers of TopoLSPLib without TS still
+# import topo-v8 if TopoLSPLib happens to expose it.
+if(_TOPO_LSP_LINKED_PLUGINS MATCHES "typescript")
+    find_dependency(topo-v8 CONFIG)
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/topo-lspTargets.cmake")
+
+check_required_components(topo-lsp)

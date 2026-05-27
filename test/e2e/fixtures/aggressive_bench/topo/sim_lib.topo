@@ -1,0 +1,115 @@
+// sim_lib.topo — LSP test fixture (aggressive_bench)
+// WARNING: line positions are anchored by test_lsp.py — avoid edits
+//
+using int = std::cpp17::int;
+
+namespace sim::phys::math::detail::fp::core {
+  private:
+    // Core FP operations
+    int add_fp(int a, int b);
+    int sub_fp(int a, int b);
+    int mul_fp(int a, int b);
+    int div_fp(int a, int b);
+    int neg_fp(int a);
+    int abs_fp(int a);
+    int min_fp(int a, int b);
+    int max_fp(int a, int b);
+    int clamp_fp(int val, int lo, int hi);
+    int floor_fp(int a);
+    int ceil_fp(int a);
+    int round_fp(int a);
+    int trunc_fp(int a);
+    int frac_fp(int a);
+    int mod_fp(int a, int b);
+    int pow_fp(int base, int exp);
+    int sqrt_fp(int a);
+    int rsqrt_fp(int a);
+    int log_fp(int a);
+    int log2_fp(int a);
+    int log10_fp(int a);
+    int exp_fp(int a);
+    int exp2_fp(int a);
+    int sin_fp(int a);
+    int cos_fp(int a);
+    int tan_fp(int a);
+    int asin_fp(int a);
+    int acos_fp(int a);
+    int atan_fp(int a);
+    int atan2_fp(int y, int x);
+    int sinh_fp(int a);
+    int cosh_fp(int a);
+    int tanh_fp(int a);
+    int lerp_fp(int a, int b, int t);
+    int smoothstep_fp(int edge0, int edge1, int x);
+    int step_fp(int edge, int x);
+    int sign_fp(int a);
+    int copysign_fp(int mag, int sgn);
+    int fma_fp(int a, int b, int c);
+    int dot2_fp(int x1, int y1, int x2, int y2);
+    int dot3_fp(int x1, int y1, int z1, int x2, int y2, int z2);
+    int cross2_fp(int x1, int y1, int x2, int y2);
+    int length2_fp(int x, int y);
+    int length3_fp(int x, int y, int z);
+    int normalize2_x(int x, int y);
+    int normalize2_y(int x, int y);
+    int normalize3_x(int x, int y, int z);
+    int normalize3_y(int x, int y, int z);
+    int normalize3_z(int x, int y, int z);
+    int reflect2_x(int ix, int iy, int nx, int ny);
+    int reflect2_y(int ix, int iy, int nx, int ny);
+    int distance2_fp(int x1, int y1, int x2, int y2);
+    int distance3_fp(int x1, int y1, int z1, int x2, int y2, int z2);
+    int mix_fp(int a, int b, int t);
+    int remap_fp(int val, int lo1, int hi1, int lo2, int hi2);
+    int saturate_fp(int a);
+    int wrap_fp(int val, int lo, int hi);
+    int ping_pong_fp(int val, int length);
+    int deg_to_rad(int deg);
+    int rad_to_deg(int rad);
+    int is_finite_fp(int a);
+    int is_nan_fp(int a);
+    int is_inf_fp(int a);
+    int bit_and_fp(int a, int b);
+    int bit_or_fp(int a, int b);
+    int bit_xor_fp(int a, int b);
+    int bit_not_fp(int a);
+    int shl_fp(int a, int n);
+    int shr_fp(int a, int n);
+    int popcount_fp(int a);
+    int clz_fp(int a);
+    int ctz_fp(int a);
+    int select_fp(int cond, int a, int b);
+    int compare_fp(int a, int b);
+    int equal_fp(int a, int b);
+    int not_equal_fp(int a, int b);
+    int less_fp(int a, int b);
+    int less_equal_fp(int a, int b);
+    int greater_fp(int a, int b);
+    int greater_equal_fp(int a, int b);
+    int approx_equal_fp(int a, int b);
+    int to_fixed_fp(int a);
+    int from_fixed_fp(int a);
+    int to_half_fp(int a);
+    int from_half_fp(int a);
+    int pack_fp(int a, int b);
+    int unpack_hi_fp(int packed);
+    int unpack_lo_fp(int packed);
+    int reduce_add_fp(int a, int b, int c, int d);
+    int reduce_mul_fp(int a, int b, int c, int d);
+    int reduce_min_fp(int a, int b, int c, int d);
+    int reduce_max_fp(int a, int b, int c, int d);
+    int horizontal_add_fp(int a, int b);
+    int horizontal_sub_fp(int a, int b);
+    int permute_fp(int a, int b, int mask);
+    int shuffle_fp(int a, int b, int mask);
+    int blend_fp(int a, int b, int mask);
+    int gather_fp(int base, int idx);
+    int scatter_fp(int val, int base, int idx);
+    int broadcast_fp(int val, int lanes);
+}
+
+namespace sim {
+  public:
+    // Entry point
+    void run_simulation(int seed);
+}

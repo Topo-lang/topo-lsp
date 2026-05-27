@@ -1,0 +1,11 @@
+// Fixture: host-side template specialization.
+// Host C++ would provide `template<> void process<int>() { ... }`.
+// The .topo declares the specialized forms that Topo cares about.
+using Int = std::cpp17::int32_t;
+
+namespace templates {
+    public:
+        // Host-side: explicit template specializations for Int and Long.
+        void process_int();
+        void process_long();
+}

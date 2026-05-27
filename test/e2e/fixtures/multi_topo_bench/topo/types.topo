@@ -1,0 +1,7 @@
+// types.topo — shared type declarations
+//
+
+using int = std::cpp17::int;
+
+std::import("sim_types.h", SimResult);
+std::import("vec_types.h", Vec2i);

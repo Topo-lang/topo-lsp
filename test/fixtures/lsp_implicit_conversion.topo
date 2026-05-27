@@ -1,0 +1,14 @@
+// Fixture: implicit conversion chain (int -> long -> double).
+// Exercises hover over a function whose host-side body performs
+// a cascade of implicit numeric conversions.
+using Int = std::cpp17::int32_t;
+using Long = std::cpp17::int64_t;
+using Double = std::cpp17::double_t;
+
+namespace convert {
+    public:
+        // Host body is expected to pass `Int` through `Long` to `Double`
+        // via implicit conversions. The .topo declaration only sees the
+        // surface signature.
+        Double widen(Int narrow);
+}

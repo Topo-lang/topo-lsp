@@ -1,0 +1,18 @@
+// engine.topo — game engine core
+
+import types;
+
+using int = std::cpp17::int;
+
+namespace engine {
+  public:
+    void init(int config);
+    void shutdown();
+    void update(int dt);
+    void fixed_update(int dt);
+
+  private:
+    void process_input();
+    void update_physics(int dt);
+    void update_ai(int dt);
+}

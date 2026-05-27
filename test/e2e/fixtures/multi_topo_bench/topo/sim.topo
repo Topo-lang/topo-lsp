@@ -1,0 +1,30 @@
+// sim.topo — simulation benchmarks
+// WARNING: line positions are anchored by test_lsp.py — avoid edits
+//
+import types;
+
+using int = std::cpp17::int;
+
+namespace sim::bench {
+  public:
+    // Initialization
+    void init_sim(int config);
+    void reset_sim();
+
+    // Configuration
+    void set_iterations(int n);
+    void set_precision(int p);
+    void set_seed(int s);
+
+    // Data management
+    void load_data(int source);
+    void save_results(int dest);
+    void clear_cache();
+
+    // Statistics
+    int get_mean();
+    int get_variance();
+    int get_sample_count();
+
+    void run_benchmark(int count, SimResult* out);
+}

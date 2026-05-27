@@ -1,0 +1,10 @@
+using Int = std::cpp17::int32_t;
+
+namespace engine {
+    public:
+        void init();
+        Int compute(Int x);
+
+    protected:
+        void helper();
+}

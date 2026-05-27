@@ -1,0 +1,10 @@
+[project]
+name = "aggressive_bench"
+
+[topo]
+root = "topo/sim_lib.topo"
+
+[build]
+sources = ["src/*.cpp"]
+standard = "c++17"
+output = "aggressive_bench"
