@@ -39,5 +39,10 @@ function(topo_lsp_set_compiler_flags target)
 endfunction()
 
 # PCH helpers — no-ops in standalone (no project-wide PCH host).
-function(topo_apply_std_pch target)
-endfunction()
+# Guard so a meta-repo that already defines `topo_apply_std_pch` (wiring
+# its real TopoPchHost) before add_subdirectory(topo-lsp) keeps that
+# real definition; standalone falls through and installs the stub.
+if(NOT COMMAND topo_apply_std_pch)
+    function(topo_apply_std_pch target)
+    endfunction()
+endif()

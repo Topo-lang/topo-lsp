@@ -29,8 +29,17 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(TopoLspCompilerFlags)
 
 # ── Upstream Topo packages ──────────────────────────────
-find_package(topo-core CONFIG REQUIRED)
-find_package(topo-lang CONFIG REQUIRED)
+# Guards let topo-lsp be add_subdirectory()'d from a meta-repo that has
+# already brought in topo-core / topo-lang as in-tree targets — the
+# find_package() then would fail with "could not find target X" since
+# the sentinels already exist. Standalone build: sentinel missing →
+# find_package runs as normal.
+if(NOT TARGET topo::core::TopoBasic)
+    find_package(topo-core CONFIG REQUIRED)
+endif()
+if(NOT TARGET topo::lang::TopoLang)
+    find_package(topo-lang CONFIG REQUIRED)
+endif()
 
 # ── External dependencies ───────────────────────────────
 find_package(nlohmann_json CONFIG REQUIRED)
@@ -59,8 +68,10 @@ set(_TOPO_LSP_PLUGIN_LIST
 # lives in topo-v8/lib/TsServer). Find it conditionally so a build without
 # the TS plugin doesn't require topo-v8.
 if(TOPO_LSP_ENABLE_TYPESCRIPT_PLUGIN)
-    find_package(topo-v8 CONFIG QUIET)
-    if(NOT topo-v8_FOUND)
+    if(NOT TARGET topo::v8::Topov8Placeholder)
+        find_package(topo-v8 CONFIG QUIET)
+    endif()
+    if(NOT TARGET topo::v8::Topov8Placeholder AND NOT topo-v8_FOUND)
         message(STATUS "topo-lsp: topo-v8 not found; disabling TypeScript plugin (TsServerBridge lives there)")
         set(TOPO_LSP_ENABLE_TYPESCRIPT_PLUGIN OFF CACHE BOOL "" FORCE)
     endif()
@@ -78,14 +89,16 @@ foreach(entry IN LISTS _TOPO_LSP_PLUGIN_LIST)
         continue()
     endif()
 
-    find_package(topo-lang-${_lang_lower} CONFIG QUIET)
-    if(NOT topo-lang-${_lang_lower}_FOUND)
+    set(_plugin_target "topo::lang-${_lang_lower}::Topo${_lang_pascal}Plugin")
+    if(NOT TARGET ${_plugin_target})
+        find_package(topo-lang-${_lang_lower} CONFIG QUIET)
+    endif()
+    if(NOT TARGET ${_plugin_target} AND NOT topo-lang-${_lang_lower}_FOUND)
         message(STATUS "topo-lsp: topo-lang-${_lang_lower} not found; disabling ${_lang_lower} plugin")
         set(TOPO_LSP_ENABLE_${_lang_upper}_PLUGIN OFF CACHE BOOL "" FORCE)
         continue()
     endif()
 
-    set(_plugin_target "topo::lang-${_lang_lower}::Topo${_lang_pascal}Plugin")
     if(NOT TARGET ${_plugin_target})
         message(STATUS "topo-lsp: topo-lang-${_lang_lower} found but ${_plugin_target} target missing (likely backend-scope-gated OFF upstream); disabling ${_lang_lower} plugin")
         set(TOPO_LSP_ENABLE_${_lang_upper}_PLUGIN OFF CACHE BOOL "" FORCE)
@@ -107,6 +120,10 @@ add_library(TopoLSPLib STATIC
     LSPServer.cpp
     lib/Formatter.cpp
 )
+# In-tree alias mirroring the post-install exported namespace, so callers
+# using `topo::lsp::TopoLSPLib` work both standalone (this alias) and as
+# an installed package (the EXPORT below).
+add_library(topo::lsp::TopoLSPLib ALIAS TopoLSPLib)
 
 # Each lang plugin PUBLIC-propagates topo::lang::TopoLang and its
 # per-language LSP bridge, which PUBLIC-depends on topo::core::TopoLSPBridge
@@ -202,7 +219,7 @@ install(FILES
 
 # ── Tests ─────────────────────────────────────────────
 option(TOPO_LSP_BUILD_TESTS "Build topo-lsp tests" ON)
-if(TOPO_LSP_BUILD_TESTS AND PROJECT_IS_TOP_LEVEL)
+if(TOPO_LSP_BUILD_TESTS AND (PROJECT_IS_TOP_LEVEL OR TOPO_META_DRIVING_TESTS))
     enable_testing()
     include(FetchContent)
     FetchContent_Declare(googletest
