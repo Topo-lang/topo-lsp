@@ -1,7 +1,7 @@
 // Integration tests for PyrightBridge — exercises the real pyright-langserver
 // binary via the bridge.  Tests GTEST_SKIP() when the backend is unavailable.
 //
-// Part of M7.1-d (LSP protocol conformance).
+// Covers LSP protocol conformance for the pyright bridge.
 
 #include "PyrightBridge.h"
 
