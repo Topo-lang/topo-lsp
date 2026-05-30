@@ -57,7 +57,8 @@ static bool clangdIsRunnable(std::string& resolvedExe) {
 // indexes main.cpp at all, so workspace/symbol can never resolve
 // `engine::init` no matter how long the test waits. Opening the fixture TU
 // here makes clangd resolve the fixture's own symbols in ~1s.
-// (issue: lsp-bridge-happy-path-tests-skip-despite-langserver-installed)
+// (this is why the happy-path tests used to skip even when clangd was
+//  installed — the missing open-document, not cold-start latency.)
 static bool startOnFixture(ClangdBridge& bridge, const std::string& clangdExe) {
     std::string dir = fixtureDir();
     std::string rootUri = "file:///" + dir;
@@ -75,8 +76,7 @@ static bool startOnFixture(ClangdBridge& bridge, const std::string& clangdExe) {
 // Poll-until-ready: clangd's background index can take well over a single
 // short query's worth of time to resolve a symbol on a cold cache. Rather
 // than GTEST_SKIP after one miss (which silently drops coverage on machines
-// where clangd IS installed — see issue
-// lsp-bridge-happy-path-tests-skip-despite-langserver-installed), retry the
+// where clangd IS installed), retry the
 // query until it yields a value or a bounded deadline elapses. The
 // missing-binary case is already gated by clangdIsRunnable()/start() before
 // this is ever called, so a persistent miss here means a genuine timeout,
@@ -102,8 +102,7 @@ static std::optional<T> pollUntil(std::function<std::optional<T>()> query,
 // `engine::init` is indexed, so a plain pollUntil would lock onto that
 // wrong first result. Requiring the result to live in the fixture makes the
 // poll wait for the fixture TU to actually be indexed.
-// (issue: lsp-bridge-happy-path-tests-skip-despite-langserver-installed;
-//  the first-result fallback itself is tracked separately.)
+// (the first-result fallback itself is a separate concern from this poll.)
 template <typename T>
 static std::optional<T> pollUntilSatisfies(
     std::function<std::optional<T>()> query,
@@ -222,8 +221,8 @@ TEST(ClangdBridge, StartFromPathIfAvailable) {
 // never sees it and its first-result fallback returns a system-header
 // symbol — the fixture symbol is genuinely unreachable via that query.
 // `runFrames` has no C++ standard-library namesake, so clangd returns
-// exactly the fixture definition. (issue:
-// lsp-bridge-happy-path-tests-skip-despite-langserver-installed)
+// exactly the fixture definition. (using a unique symbol name avoids the
+// system-header collisions that made the happy-path query unresolvable.)
 TEST(ClangdBridge, FindDefinitionOnRealSymbol) {
     std::string clangdExe;
     if (!clangdIsRunnable(clangdExe)) GTEST_SKIP() << "clangd not available";
@@ -420,7 +419,7 @@ TEST(ClangdBridge, ConcurrentQueriesSameSession) {
 }
 
 // ---------------------------------------------------------------------------
-// Failure-path tests (open issue: lsp-bridge-malformed-harness-untracked-after-issue-archived)
+// Failure-path tests (missing-binary / malformed-harness degradation)
 // ---------------------------------------------------------------------------
 
 // Test: when the configured binary is missing the bridge must fail start()

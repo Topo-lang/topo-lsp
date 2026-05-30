@@ -20,9 +20,9 @@ using namespace topo::lsp;
 // Poll-until-ready helper: pyright's workspace/symbol index can take more
 // than a single short query's worth of time on a cold cache. Retrying until
 // a bounded deadline (instead of GTEST_SKIP after one miss) keeps the
-// happy-path assertions actually running when pyright IS installed — see
-// issue lsp-bridge-happy-path-tests-skip-despite-langserver-installed. The
-// missing-binary case is gated upstream by findPyrightLangserver()/fx.ok(),
+// happy-path assertions actually running when pyright IS installed, rather
+// than silently dropping coverage on machines where the langserver exists.
+// The missing-binary case is gated upstream by findPyrightLangserver()/fx.ok(),
 // so a persistent miss here is a genuine index timeout, not an absent tool.
 template <typename T>
 static std::optional<T> pollUntil(std::function<std::optional<T>()> query,
@@ -133,8 +133,9 @@ TEST(PyrightBridge, FindTypeDefinitionKnownClassFallback) {
 }
 
 // PEP 695 generic class declarations (`class Container[T]:`) — the
-// follow-set must accept `[` so the fallback regex matches.  Pins
-// issue topo-lang-python-pyright-findtypedefinition-pep695-not-matched.
+// follow-set must accept `[` so the fallback regex matches.  Regression
+// guard for the PEP 695 generic class that the findTypeDefinition fallback
+// regex previously failed to match.
 TEST(PyrightBridge, FindTypeDefinitionPep695GenericClassFallback) {
     PyrightBridge bridge;
     auto containerResult = bridge.findTypeDefinition(
@@ -163,8 +164,8 @@ TEST(PyrightBridge, FindTypeDefinitionPep695GenericClassFallback) {
 // ``std::regex``; a dotted name ``module.Foo`` then matched ``module*Foo`` and
 // a bracketed name ``Container[T]`` opened a malformed character class and
 // threw ``std::regex_error`` straight through the LSP request handler. The
-// fix escapes ECMAScript metacharacters before constructing the regex. Pins
-// issue topo-lang-python-pyright-findtypedefinition-regex-injection.
+// fix escapes ECMAScript metacharacters before constructing the regex.
+// Regression guard against regex-metacharacter injection in lookup names.
 TEST(PyrightBridge, FindTypeDefinitionRegexMetacharsAreEscaped) {
     PyrightBridge bridge;
 
@@ -237,7 +238,8 @@ public:
         // never resolves regardless of how long the test polls — this is the
         // real cause of the "did not index within 30s" skip, not cold-cache
         // latency. Opening widget.py makes pyright resolve it in ~0.1s.
-        // (issue: lsp-bridge-happy-path-tests-skip-despite-langserver-installed)
+        // (this is why the happy-path tests used to skip even when the
+        //  langserver was installed.)
         bridge_.openDocument(fixtureDir() + "/widget.py");
         (void)bridge_.waitForIndex(std::chrono::milliseconds{15000});
     }
@@ -344,7 +346,7 @@ TEST(PyrightBridge, FindTypeDefinitionOnClass) {
 }
 
 // ---------------------------------------------------------------------------
-// Failure-path tests (open issue: lsp-bridge-malformed-harness-untracked-after-issue-archived)
+// Failure-path tests (missing-binary / malformed-harness degradation)
 // ---------------------------------------------------------------------------
 
 // Test: when pyright-langserver binary is missing the bridge must fail

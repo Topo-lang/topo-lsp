@@ -763,7 +763,7 @@ TEST_F(LSPServerTest, NonCanonicalSyntaxCodeAction) {
 
 // ============================================================================
 // didChange (incremental update) — cold-start coverage is elsewhere; these
-// exercise edit-path behavior (issue: lsp-no-incremental-update-tests)
+// exercise edit-path behavior (incremental-update coverage).
 // ============================================================================
 
 // Helper: send a full-document didChange and drain pending notifications.
@@ -948,7 +948,7 @@ TEST_F(LSPServerTest, DidChangeMultipleEditsConsistent) {
 
 // ============================================================================
 // Edge-case fixture regression coverage
-// (issue: lsp-fixtures-lack-realistic-edge-cases)
+// (realistic edge-case fixtures the earlier suites lacked)
 //
 // These fixtures exercise real-project scenarios (implicit conversions,
 // macro-defined symbols, extern "C" FFI, template specialization).  The

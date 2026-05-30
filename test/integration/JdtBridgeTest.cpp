@@ -273,7 +273,7 @@ TEST(JdtBridge, UnknownSymbolReturnsNullopt) {
 }
 
 // ---------------------------------------------------------------------------
-// Failure-path tests (open issue: lsp-bridge-malformed-harness-untracked-after-issue-archived)
+// Failure-path tests (missing-binary / malformed-harness degradation)
 // ---------------------------------------------------------------------------
 
 // Test: when jdtls binary is missing the bridge must fail start() cleanly,

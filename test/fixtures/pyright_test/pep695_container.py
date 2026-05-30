@@ -1,8 +1,7 @@
 """PEP 695 generic class fixture for PyrightBridge.findTypeDefinition.
 
 This file exercises the regex follow-set that historically did not
-accept `[` (issue topo-lang-python-pyright-findtypedefinition-pep695-
-not-matched). The class declaration has no `(...)` inheritance list and
+accept `[`. The class declaration has no `(...)` inheritance list and
 no `:` immediately after the name — only `[T]` — so the pre-fix
 regex's `[\\s(:]` follow-set fails to match.
 """

@@ -211,7 +211,7 @@ TEST_F(RustAnalyzerBridgeLive, EmptyQualifiedNameReturnsNullopt) {
 }
 
 // ---------------------------------------------------------------------------
-// Failure-path tests (open issue: lsp-bridge-malformed-harness-untracked-after-issue-archived)
+// Failure-path tests (missing-binary / malformed-harness degradation)
 // ---------------------------------------------------------------------------
 
 // Test: when the configured rust-analyzer binary is missing the bridge must
