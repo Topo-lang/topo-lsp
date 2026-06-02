@@ -14,12 +14,19 @@ env:
   TOPO_CORE_REF: main
   TOPO_LANG_REF: main
   TOPO_V8_REF: main
+  TOPO_LANG_CPP_REF: main
+  TOPO_LANG_RUST_REF: main
   TOPO_LANG_JAVA_REF: main
   TOPO_LANG_PYTHON_REF: main
   TOPO_LANG_TYPESCRIPT_REF: main
-  # cpp / rust plugin aggregators are gated upstream by TOPO_LANG_<L>_ENABLE_LLVM
-  # and not in their default install set yet; topo-lsp auto-detects their
-  # absence and disables those plugins (auto-handled, no CI work needed).
+  # Two distinct cpp/rust artifacts must not be conflated:
+  #   - the LLVM-gated PLUGIN aggregator (TopoCppPlugin / TopoRustPlugin) stays
+  #     disabled here (we do NOT set TOPO_LANG_<L>_ENABLE_LLVM), and
+  #   - the LSP BRIDGE (TopoCppLSP / TopoRustLSP), which is in the DEFAULT
+  #     install set (no LLVM needed) and IS required for the cpp/rust bridge
+  #     integration tests to import.
+  # We therefore build+install topo-lang-cpp / topo-lang-rust in default scope
+  # below; otherwise find_package fails and the bridge tests configure-skip.
 
 jobs:
   build-and-test:
@@ -38,23 +45,46 @@ jobs:
       - name: Install build deps (linux)
         if: runner.os == 'Linux'
         run: |
+          set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y -qq ninja-build clangd rust-src \
             openjdk-17-jdk python3 python3-pip nodejs npm
-          # External LSP servers for integration tests (rust-analyzer / pyright /
-          # jdtls / typescript-language-server). Each integration test self-skips
-          # when its server is absent, so a missing one is non-fatal.
-          rustup component add rust-analyzer || true
-          python3 -m pip install --user pyright || true
-          npm i -g typescript-language-server typescript || true
+          # External LSP servers — installed DETERMINISTICALLY (not best-effort):
+          # the cpp/rust/python/java bridge integration tests are required to RUN
+          # on Linux, not self-skip (a skipped test is not a passing test). The
+          # "Assert live bridges ran" step below fails the job if any bridge
+          # fully self-skips.
+          # clangd: from apt above. rust-analyzer (ensure a PATH proxy exists —
+          # the bridge probes `command -v rust-analyzer`):
+          rustup component add rust-analyzer
+          ra="$(rustup which --toolchain stable rust-analyzer 2>/dev/null || rustup which rust-analyzer 2>/dev/null || true)"
+          if [ -n "${ra}" ]; then ln -sf "${ra}" "${HOME}/.cargo/bin/rust-analyzer"; fi
+          command -v rust-analyzer
+          # pyright ships the pyright-langserver binary the bridge probes for;
+          # npm -g puts it on PATH (unlike pip --user's ~/.local/bin).
+          npm i -g pyright
+          # jdtls (Eclipse JDT Language Server) — no apt package; use the
+          # published snapshot tarball and expose its launcher on PATH.
+          curl -fsSL -o /tmp/jdtls.tar.gz \
+            https://download.eclipse.org/jdtls/snapshots/jdt-language-server-latest.tar.gz
+          mkdir -p "${HOME}/jdtls"
+          tar -xzf /tmp/jdtls.tar.gz -C "${HOME}/jdtls"
+          printf '#!/usr/bin/env bash\nexec python3 "%s/bin/jdtls" "$@"\n' "${HOME}/jdtls" \
+            | sudo tee /usr/local/bin/jdtls >/dev/null
+          sudo chmod +x /usr/local/bin/jdtls
+          jdtls --help >/dev/null 2>&1 || echo "jdtls launcher present (probe non-zero is fine)"
 
       - name: Install build deps (macos)
         if: runner.os == 'macOS'
         run: |
-          brew install ninja llvm rust openjdk@17 python@3.12 node || true
-          # External LSP servers (best-effort; integration tests self-skip).
-          brew install rust-analyzer pyright || true
-          npm i -g typescript-language-server typescript || true
+          set -euo pipefail
+          brew install ninja llvm rust openjdk@17 python@3.12 node
+          # brew llvm is keg-only — put clangd on PATH for the cpp bridge probe.
+          echo "$(brew --prefix llvm)/bin" >> "${GITHUB_PATH}"
+          # Deterministic external LSP servers (see Linux note). jdtls +
+          # rust-analyzer have Homebrew formulae; pyright via npm -g.
+          brew install rust-analyzer jdtls
+          npm i -g pyright
 
       - name: Set up JDK 17
         uses: actions/setup-java@v5
@@ -80,7 +110,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ${{ runner.temp }}/topo-install
-          key: topo-lsp-deps-core-${{ env.TOPO_CORE_REF }}-lang-${{ env.TOPO_LANG_REF }}-v8-${{ env.TOPO_V8_REF }}-langjava-${{ env.TOPO_LANG_JAVA_REF }}-langpy-${{ env.TOPO_LANG_PYTHON_REF }}-langts-${{ env.TOPO_LANG_TYPESCRIPT_REF }}-${{ matrix.os }}-v3
+          key: topo-lsp-deps-core-${{ env.TOPO_CORE_REF }}-lang-${{ env.TOPO_LANG_REF }}-v8-${{ env.TOPO_V8_REF }}-langcpp-${{ env.TOPO_LANG_CPP_REF }}-langrust-${{ env.TOPO_LANG_RUST_REF }}-langjava-${{ env.TOPO_LANG_JAVA_REF }}-langpy-${{ env.TOPO_LANG_PYTHON_REF }}-langts-${{ env.TOPO_LANG_TYPESCRIPT_REF }}-${{ matrix.os }}-v4
 
       - name: Build & install topo-core (zero-LLVM, lang-less)
         if: steps.topo-cache.outputs.cache-hit != 'true'
@@ -134,6 +164,38 @@ jobs:
                 -DCMAKE_PREFIX_PATH="${RUNNER_TEMP}/topo-install" \
                 -DCMAKE_TOOLCHAIN_FILE="${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
           cmake --build "${RUNNER_TEMP}/topo-v8-build" --target install
+
+      - name: Build & install topo-lang-cpp (default scope, LLVM OFF)
+        if: steps.topo-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch "${TOPO_LANG_CPP_REF}" \
+              https://github.com/topo-lang/topo-lang-cpp.git \
+              "${RUNNER_TEMP}/topo-lang-cpp-src"
+          cmake -S "${RUNNER_TEMP}/topo-lang-cpp-src" \
+                -B "${RUNNER_TEMP}/topo-lang-cpp-build" \
+                -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_INSTALL_PREFIX="${RUNNER_TEMP}/topo-install" \
+                -DCMAKE_PREFIX_PATH="${RUNNER_TEMP}/topo-install" \
+                -DCMAKE_TOOLCHAIN_FILE="${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" \
+                -DTOPO_LANG_CPP_BUILD_TESTS=OFF
+          cmake --build "${RUNNER_TEMP}/topo-lang-cpp-build" --target install
+
+      - name: Build & install topo-lang-rust (default scope, LLVM OFF)
+        if: steps.topo-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch "${TOPO_LANG_RUST_REF}" \
+              https://github.com/topo-lang/topo-lang-rust.git \
+              "${RUNNER_TEMP}/topo-lang-rust-src"
+          cmake -S "${RUNNER_TEMP}/topo-lang-rust-src" \
+                -B "${RUNNER_TEMP}/topo-lang-rust-build" \
+                -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_INSTALL_PREFIX="${RUNNER_TEMP}/topo-install" \
+                -DCMAKE_PREFIX_PATH="${RUNNER_TEMP}/topo-install" \
+                -DCMAKE_TOOLCHAIN_FILE="${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" \
+                -DTOPO_LANG_RUST_BUILD_TESTS=OFF
+          cmake --build "${RUNNER_TEMP}/topo-lang-rust-build" --target install
 
       - name: Build & install topo-lang-java
         if: steps.topo-cache.outputs.cache-hit != 'true'
@@ -195,7 +257,43 @@ jobs:
         run: cmake --build build
 
       - name: Test
-        run: ctest --test-dir build --output-on-failure --timeout 180
+        run: ctest --test-dir build --output-on-failure --timeout 300
+
+      - name: Assert live host-bridge round-trips ran (non-Windows)
+        # A bridge test is a single ctest entry whose internal gtest cases
+        # GTEST_SKIP() when the external server is absent — so "Passed" can mean
+        # "every case skipped". This step re-runs each bridge verbosely and FAILS
+        # if it reports zero non-skipped (PASSED) cases, converting a silent
+        # all-skip into a hard failure (skip != pass). Windows bridges are
+        # if(NOT WIN32)-excluded by design (an explicit, reasoned exclusion, not
+        # a silent one), so this assertion is ubuntu+macOS-scoped.
+        if: runner.os != 'Windows'
+        run: |
+          # set +e: handle errors explicitly. GHA wraps run: with `bash -e`, and
+          # a grep no-match inside a command substitution would otherwise abort
+          # the whole step silently.
+          set +e
+          fail=0
+          for t in topo-lsp-integration-tests topo-lsp-rust-integration-tests \
+                   topo-lsp-java-integration-tests topo-lsp-python-integration-tests; do
+            exe=$(find build -type f -name "${t}" 2>/dev/null | head -1)
+            if [ -z "${exe}" ]; then
+              echo "::error::bridge ${t}: executable not found under build/"; fail=1; continue
+            fi
+            out=$("${exe}" 2>&1); rc=$?
+            passed=$(printf '%s\n' "${out}" | grep -oE '\[  PASSED  \] [0-9]+ test' | grep -oE '[0-9]+' | tail -1)
+            skipped=$(printf '%s\n' "${out}" | grep -oE '\[  SKIPPED \] [0-9]+ test' | grep -oE '[0-9]+' | tail -1)
+            [ -z "${passed}" ] && passed=0
+            [ -z "${skipped}" ] && skipped=0
+            echo "bridge ${t}: ${passed} live PASSED, ${skipped} skipped (exit ${rc})"
+            if [ "${rc}" -ne 0 ]; then
+              printf '%s\n' "${out}" | tail -25
+              echo "::error::bridge ${t}: exited ${rc}"; fail=1
+            elif [ "${passed}" -lt 1 ]; then
+              echo "::error::bridge ${t}: ran 0 non-skipped cases — external server missing or self-skip (skip != pass)"; fail=1
+            fi
+          done
+          [ "${fail}" -eq 0 ]
 
       - name: Install topo-lsp
         run: cmake --install build --prefix "${RUNNER_TEMP}/lsp-install"
