@@ -269,24 +269,31 @@ jobs:
         # a silent one), so this assertion is ubuntu+macOS-scoped.
         if: runner.os != 'Windows'
         run: |
-          set -uo pipefail
+          # set +e: handle errors explicitly. GHA wraps run: with `bash -e`, and
+          # a grep no-match inside a command substitution would otherwise abort
+          # the whole step silently.
+          set +e
           fail=0
           for t in topo-lsp-integration-tests topo-lsp-rust-integration-tests \
                    topo-lsp-java-integration-tests topo-lsp-python-integration-tests; do
-            out=$(ctest --test-dir build -R "^${t}$" -V 2>&1) || { echo "$out" | tail -20; echo "::error::bridge $t failed to run"; fail=1; continue; }
-            passed=$(printf '%s\n' "$out" | grep -oE '\[  PASSED  \] [0-9]+ test' | grep -oE '[0-9]+' | tail -1)
-            skipped=$(printf '%s\n' "$out" | grep -oE '\[  SKIPPED \] [0-9]+ test' | grep -oE '[0-9]+' | tail -1)
-            passed=${passed:-0}; skipped=${skipped:-0}
-            echo "bridge ${t}: ${passed} live PASSED, ${skipped} skipped"
-            if [ "${passed}" -lt 1 ]; then
-              echo "::error::bridge ${t} ran 0 non-skipped cases — its external server is missing or it self-skipped (skip != pass)"
-              fail=1
+            exe=$(find build -type f -name "${t}" 2>/dev/null | head -1)
+            if [ -z "${exe}" ]; then
+              echo "::error::bridge ${t}: executable not found under build/"; fail=1; continue
+            fi
+            out=$("${exe}" 2>&1); rc=$?
+            passed=$(printf '%s\n' "${out}" | grep -oE '\[  PASSED  \] [0-9]+ test' | grep -oE '[0-9]+' | tail -1)
+            skipped=$(printf '%s\n' "${out}" | grep -oE '\[  SKIPPED \] [0-9]+ test' | grep -oE '[0-9]+' | tail -1)
+            [ -z "${passed}" ] && passed=0
+            [ -z "${skipped}" ] && skipped=0
+            echo "bridge ${t}: ${passed} live PASSED, ${skipped} skipped (exit ${rc})"
+            if [ "${rc}" -ne 0 ]; then
+              printf '%s\n' "${out}" | tail -25
+              echo "::error::bridge ${t}: exited ${rc}"; fail=1
+            elif [ "${passed}" -lt 1 ]; then
+              echo "::error::bridge ${t}: ran 0 non-skipped cases — external server missing or self-skip (skip != pass)"; fail=1
             fi
           done
-          if [ "${fail}" -ne 0 ]; then
-            echo "One or more host-bridge integration suites verified nothing — failing."
-            exit 1
-          fi
+          [ "${fail}" -eq 0 ]
 
       - name: Install topo-lsp
         run: cmake --install build --prefix "${RUNNER_TEMP}/lsp-install"
