@@ -195,6 +195,35 @@ TEST(LspProtocolHandshake, RequestBeforeInitializeReturnsServerNotInitialized) {
     // server with non-zero status — both are acceptable for cleanup.
 }
 
+TEST(LspProtocolHandshake, MalformedRequestDoesNotCrashServer) {
+    // Robustness regression: a parseable-but-malformed request (here a hover
+    // whose `textDocument.uri` is a number rather than a string) makes a
+    // handler throw nlohmann::json::type_error. The main loop's exception
+    // barrier must convert that throw into a JSON-RPC error (-32602) for the
+    // request instead of letting it unwind past main() and std::terminate the
+    // server for every open document. After the bad frame, the server must
+    // still answer a subsequent valid request.
+    LspProtocolClient client{kLspBinary};
+    ASSERT_TRUE(responseHasResult(client.initialize(nullptr)));
+    client.initialized();
+
+    // uri is an integer, not a string -> get<std::string>() throws type_error.
+    json badParams = {{"textDocument", {{"uri", 12345}}},
+                      {"position", {{"line", 0}, {"character", 0}}}};
+    auto badResp = client.sendRequest("textDocument/hover", badParams);
+    ASSERT_TRUE(badResp.has_value()) << "server must respond to a malformed request, not crash";
+    ASSERT_TRUE(badResp->contains("error")) << "malformed request must return an error object";
+    EXPECT_EQ((*badResp)["error"]["code"].get<int>(), -32602)
+        << "malformed params must map to InvalidParams (-32602)";
+
+    // The server must still be alive and serving after the bad frame.
+    EXPECT_TRUE(client.isRunning()) << "server must survive a malformed request";
+    json okParams = {{"textDocument", {{"uri", "file:///tmp/protocol-malformed-alive.topo"}}}};
+    auto okResp = client.sendRequest("textDocument/documentSymbol", okParams);
+    ASSERT_TRUE(okResp.has_value()) << "server did not respond after a malformed request";
+    EXPECT_TRUE(responseHasResult(okResp));
+}
+
 TEST(LspProtocolHandshake, UnknownRequestReturnsMethodNotFound) {
     // Per JSON-RPC 2.0, an unknown method on a request (has id) must produce
     // error code -32601 (Method not found).

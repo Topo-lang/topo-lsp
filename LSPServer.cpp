@@ -395,7 +395,11 @@ void HostFunctionIndex::scanCompileCommands(const std::string& buildDir) {
     try {
         json commands = json::parse(file);
         for (const auto& entry : commands) {
-            if (entry.contains("file")) {
+            // A parseable compile_commands.json whose `file` field is non-string
+            // (or whose entry is non-object) must be skipped, not throw: guard
+            // with is_string() before get<>() so one bad entry cannot abort the
+            // scan or escape as json::type_error.
+            if (entry.is_object() && entry.contains("file") && entry["file"].is_string()) {
                 std::string srcFile = entry["file"].get<std::string>();
                 // Only scan recognized source files
                 fs::path p(srcFile);
@@ -405,8 +409,9 @@ void HostFunctionIndex::scanCompileCommands(const std::string& buildDir) {
                 }
             }
         }
-    } catch (const json::parse_error&) {
-        // Silently ignore malformed compile_commands.json
+    } catch (const json::exception&) {
+        // Silently ignore malformed compile_commands.json (syntactic parse
+        // errors and any residual type errors).
     }
 }
 
@@ -2618,7 +2623,13 @@ std::string LSPServer::uriToPath(const std::string& uri) {
         // Decode percent-encoded characters
         std::string decoded;
         for (size_t i = 0; i < path.size(); ++i) {
-            if (path[i] == '%' && i + 2 < path.size()) {
+            // Only decode a %XX escape when both following chars are valid hex
+            // digits; a malformed escape (e.g. %ZZ) must emit a literal '%'
+            // rather than let std::stoi throw std::invalid_argument and unwind
+            // out of nearly every handler.
+            if (path[i] == '%' && i + 2 < path.size() &&
+                std::isxdigit(static_cast<unsigned char>(path[i + 1])) &&
+                std::isxdigit(static_cast<unsigned char>(path[i + 2]))) {
                 auto hex = path.substr(i + 1, 2);
                 decoded += static_cast<char>(std::stoi(hex, nullptr, 16));
                 i += 2;
@@ -2628,7 +2639,8 @@ std::string LSPServer::uriToPath(const std::string& uri) {
         }
 #ifdef _WIN32
         // On Windows, strip leading '/' before drive letter: /C:/... → C:/...
-        if (decoded.size() >= 3 && decoded[0] == '/' && std::isalpha(decoded[1]) && decoded[2] == ':') {
+        if (decoded.size() >= 3 && decoded[0] == '/' &&
+            std::isalpha(static_cast<unsigned char>(decoded[1])) && decoded[2] == ':') {
             decoded = decoded.substr(1);
         }
 #endif

@@ -59,7 +59,13 @@ static std::optional<json> readMessage() {
         // Parse Content-Length header
         const std::string prefix = "Content-Length: ";
         if (line.substr(0, prefix.size()) == prefix) {
-            contentLength = std::stoi(line.substr(prefix.size()));
+            // A non-numeric or oversized value would throw std::invalid_argument
+            // / std::out_of_range; a malformed frame must not unwind out of main.
+            try {
+                contentLength = std::stoi(line.substr(prefix.size()));
+            } catch (const std::exception&) {
+                return std::nullopt;
+            }
         }
     }
 
@@ -121,7 +127,22 @@ int main() {
 
         std::cerr << "[topo-lsp] << " << msg->value("method", "(response)") << "\n";
 
-        auto response = server.handleMessage(*msg);
+        // Exception barrier: a single malformed-but-parseable message (missing
+        // or wrong-typed field, bad URI/escape, etc.) must not std::terminate
+        // the server for every open document. Convert any throw into a
+        // JSON-RPC error for requests (those carrying an "id"), or drop it for
+        // notifications, so the session survives one bad frame.
+        std::optional<json> response;
+        try {
+            response = server.handleMessage(*msg);
+        } catch (const std::exception& e) {
+            std::cerr << "[topo-lsp] handleMessage error: " << e.what() << "\n";
+            if (msg->contains("id") && !(*msg)["id"].is_null()) {
+                response = json{{"jsonrpc", "2.0"},
+                                {"id", (*msg)["id"]},
+                                {"error", {{"code", -32602}, {"message", std::string("InvalidParams: ") + e.what()}}}};
+            }
+        }
 
         // Send any pending notifications (e.g. publishDiagnostics)
         for (auto& notification : server.takePendingNotifications()) {
