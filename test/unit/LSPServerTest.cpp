@@ -1036,6 +1036,62 @@ TEST_F(LSPServerTest, FixtureTemplateSpecializationLoads) {
     EXPECT_TRUE((*resp)["result"].is_array());
 }
 
+// ============================================================================
+// Topo.toml Go to Definition — out-of-bounds / robustness regression
+// ============================================================================
+
+// Regression: a definition request whose cursor sits PAST the end of the line
+// (character >= line length) used to index lineStr[idx] out of bounds in
+// handleTomlDefinition. The handler must clamp the index and return a null
+// result instead of reading out of bounds.
+TEST_F(LSPServerTest, TomlDefinitionCursorPastEndOfLineNoCrash) {
+    // A Topo.toml routes to handleTomlDefinition (uri ends with "Topo.toml").
+    std::string tomlSource =
+        "[build]\n"
+        "language = \"cpp\"\n"
+        "sources = [\"src/a.cpp\"]\n";
+    std::string tomlUri = "file:///test/Topo.toml";
+    openDocument(tomlUri, tomlSource);
+
+    // Place the cursor far past the end of the first (short) line. Before the
+    // fix this dereferenced lineStr[idx] with idx beyond size().
+    json defMsg = {{"jsonrpc", "2.0"},
+                   {"id", 400},
+                   {"method", "textDocument/definition"},
+                   {"params",
+                    {{"textDocument", {{"uri", tomlUri}}},
+                     {"position", {{"line", 0}, {"character", 9999}}}}}};
+    auto resp = server_.handleMessage(defMsg);
+    ASSERT_TRUE(resp.has_value());
+    // No quoted string around an out-of-range cursor → null, no crash.
+    EXPECT_TRUE((*resp)["result"].is_null())
+        << "Cursor past end-of-line must yield a null definition, not an OOB read";
+}
+
+// Regression: a definition request on a quoted relative path that does not
+// resolve to an existing file must return null cleanly (exercises the
+// error_code canonical path — the throwing form would crash on a vanished
+// or non-existent target).
+TEST_F(LSPServerTest, TomlDefinitionMissingTargetReturnsNull) {
+    std::string tomlSource =
+        "[build]\n"
+        "sources = [\"does/not/exist/here.cpp\"]\n";
+    std::string tomlUri = "file:///test/Topo.toml";
+    openDocument(tomlUri, tomlSource);
+
+    // Cursor inside the quoted "does/not/exist/here.cpp" string on line 1.
+    json defMsg = {{"jsonrpc", "2.0"},
+                   {"id", 401},
+                   {"method", "textDocument/definition"},
+                   {"params",
+                    {{"textDocument", {{"uri", tomlUri}}},
+                     {"position", {{"line", 1}, {"character", 20}}}}}};
+    auto resp = server_.handleMessage(defMsg);
+    ASSERT_TRUE(resp.has_value());
+    EXPECT_TRUE((*resp)["result"].is_null())
+        << "Definition on a non-existent target path must return null, not throw";
+}
+
 TEST_F(LSPServerTest, CanonicalSyntaxNoExtraDiagnostics) {
     // A document using canonical syntax should produce no non-canonical warnings
     std::string canonicalSource =

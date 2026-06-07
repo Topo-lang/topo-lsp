@@ -401,10 +401,14 @@ void HostFunctionIndex::scanCompileCommands(const std::string& buildDir) {
             // scan or escape as json::type_error.
             if (entry.is_object() && entry.contains("file") && entry["file"].is_string()) {
                 std::string srcFile = entry["file"].get<std::string>();
-                // Only scan recognized source files
+                // Only scan recognized source files. The allow-list must cover
+                // every extension scanFile() can actually dispatch (C-family,
+                // .rs, .java, .py); omitting .py silently dropped Python TUs
+                // from the index even though scanPythonFile() handles them.
                 fs::path p(srcFile);
                 auto ext = p.extension().string();
-                if (ext == ".cpp" || ext == ".cc" || ext == ".cxx" || ext == ".c" || ext == ".rs" || ext == ".java") {
+                if (ext == ".cpp" || ext == ".cc" || ext == ".cxx" || ext == ".c" || ext == ".rs" ||
+                    ext == ".java" || ext == ".py") {
                     scanFile(srcFile);
                 }
             }
@@ -1053,9 +1057,21 @@ void LSPServer::publishDiagnostics(const std::string& uri) {
             if (d.location.endLine > 0) {
                 endLine = std::max(0, d.location.endLine - 1);
                 endCol = std::max(0, d.location.endColumn - 1);
+                // A reported endColumn can run past the actual line (stale or
+                // mis-measured span); clamp it to the line length so the range
+                // never extends beyond the end of the line the client renders.
+                if (docIt != documents_.end()) {
+                    int lineLen = lineLengthAt(docIt->second, d.location.endLine);
+                    if (lineLen >= 0 && endCol > lineLen) endCol = lineLen;
+                }
             } else if (docIt != documents_.end()) {
                 int len = identifierLengthAt(docIt->second, d.location.line, d.location.column);
                 endCol = col + std::max(1, len);
+                // Clamp the estimated end to the line length as well, but never
+                // below the start column (an inverted range is worse than a
+                // slightly-too-long one for clients that render the squiggle).
+                int lineLen = lineLengthAt(docIt->second, d.location.line);
+                if (lineLen >= 0 && endCol > lineLen) endCol = std::max(col, lineLen);
             } else {
                 endCol = col + 1;
             }
@@ -1474,8 +1490,14 @@ json LSPServer::handleDefinition(const json& id, const json& params) {
 
                 for (const auto& dir : searchDirs) {
                     fs::path candidate = dir / imp.path;
-                    if (fs::exists(candidate)) {
-                        resolvedFile = fs::canonical(candidate).string();
+                    // Use the error_code overload: between exists() and
+                    // canonical() the file can be deleted/replaced (TOCTOU);
+                    // the throwing form would crash the server, so treat a
+                    // failed canonicalization as a miss and keep searching.
+                    std::error_code ec;
+                    fs::path canon = fs::canonical(candidate, ec);
+                    if (!ec) {
+                        resolvedFile = canon.string();
                         break;
                     }
                 }
@@ -1573,8 +1595,16 @@ json LSPServer::handleTomlDefinition(const json& id, const std::string& uri, int
         return json{{"jsonrpc", "2.0"}, {"id", id}, {"result", nullptr}};
     }
 
-    // Find the quoted string surrounding the cursor (0-based col index)
+    // Find the quoted string surrounding the cursor (0-based col index).
+    // A cursor past end-of-line yields idx >= lineStr.size(); clamp it to the
+    // last valid index before indexing lineStr[i] (the backward scan starts at
+    // i == idx, so an unclamped idx is an out-of-bounds read). Mirrors the
+    // bounds guard in identifierAtPosition / identifierLengthAt.
     int idx = col - 1;
+    if (idx >= static_cast<int>(lineStr.size())) idx = static_cast<int>(lineStr.size()) - 1;
+    if (idx < 0) {
+        return json{{"jsonrpc", "2.0"}, {"id", id}, {"result", nullptr}};
+    }
     // Find the opening quote before or at cursor
     int qStart = -1, qEnd = -1;
     for (int i = idx; i >= 0; --i) {
@@ -1614,7 +1644,15 @@ json LSPServer::handleTomlDefinition(const json& id, const std::string& uri, int
             // Otherwise just return null (VS Code can't open dirs via LSP)
             return json{{"jsonrpc", "2.0"}, {"id", id}, {"result", nullptr}};
         }
-        tgtUri = pathToUri(fs::canonical(target).string());
+        // Use the error_code overload: the file checked by exists() above can
+        // vanish before canonical() runs (TOCTOU). The throwing form would
+        // crash the server; on failure treat it as no definition.
+        std::error_code ec;
+        fs::path canon = fs::canonical(target, ec);
+        if (ec) {
+            return json{{"jsonrpc", "2.0"}, {"id", id}, {"result", nullptr}};
+        }
+        tgtUri = pathToUri(canon.string());
         return json{
             {"jsonrpc", "2.0"},
             {"id", id},
@@ -2060,6 +2098,17 @@ std::string LSPServer::identifierAtPosition(const std::string& source, int line,
 
     if (start >= end) return "";
     return lineStr.substr(start, end - start);
+}
+
+int LSPServer::lineLengthAt(const std::string& source, int line) const {
+    std::istringstream stream(source);
+    std::string lineStr;
+    int currentLine = 0;
+    while (std::getline(stream, lineStr)) {
+        ++currentLine;
+        if (currentLine == line) return static_cast<int>(lineStr.size());
+    }
+    return -1;
 }
 
 int LSPServer::identifierLengthAt(const std::string& source, int line, int column) const {
@@ -2655,12 +2704,36 @@ std::string LSPServer::pathToUri(const std::string& path) {
     for (auto& c : normalized) {
         if (c == '\\') c = '/';
     }
+
+    // Percent-encode so the URI is well-formed and round-trips through
+    // uriToPath: a path containing '%', spaces, or non-ASCII bytes would
+    // otherwise produce a malformed/ambiguous URI (a literal '%' followed by
+    // two hex-looking chars would be decoded back as an escape, corrupting the
+    // file identity). Keep '/' as the path separator unencoded; leave the
+    // RFC 3986 unreserved set (A-Za-z0-9-._~) verbatim and escape everything
+    // else (uriToPath decodes %XX, so ':' etc. round-trip correctly).
+    auto isUnreserved = [](unsigned char c) {
+        return std::isalnum(c) || c == '-' || c == '.' || c == '_' || c == '~';
+    };
+    static const char* hexDigits = "0123456789ABCDEF";
+    std::string encoded;
+    encoded.reserve(normalized.size());
+    for (unsigned char c : normalized) {
+        if (isUnreserved(c) || c == '/') {
+            encoded += static_cast<char>(c);
+        } else {
+            encoded += '%';
+            encoded += hexDigits[(c >> 4) & 0xF];
+            encoded += hexDigits[c & 0xF];
+        }
+    }
+
     // On Unix, absolute paths start with '/' so "file://" + "/path" = "file:///path".
     // On Windows, prepend an extra '/' before the drive letter.
-    if (!normalized.empty() && normalized[0] != '/') {
-        return "file:///" + normalized;
+    if (!encoded.empty() && encoded[0] != '/') {
+        return "file:///" + encoded;
     }
-    return "file://" + normalized;
+    return "file://" + encoded;
 }
 
 } // namespace topo::lsp

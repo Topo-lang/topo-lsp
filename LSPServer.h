@@ -120,6 +120,10 @@ private:
     // Scan identifier length at position in source for diagnostic range.
     int identifierLengthAt(const std::string& source, int line, int column) const;
 
+    // Length (in characters) of the 1-based `line` in `source`, or -1 when the
+    // line does not exist. Used to clamp diagnostic end columns to the line.
+    int lineLengthAt(const std::string& source, int line) const;
+
     // Build qualified name candidates from an identifier.
     std::vector<std::string> qualifiedCandidates(const std::string& uri, const std::string& identifier) const;
 
