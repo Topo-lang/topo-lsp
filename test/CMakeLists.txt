@@ -27,7 +27,7 @@ target_compile_definitions(topo-lsp-tests PRIVATE
     TOPO_TEST_FIXTURES_DIR="${TOPO_CORE_FIXTURES_DIR}")
 topo_lsp_set_compiler_flags(topo-lsp-tests)
 gtest_discover_tests(topo-lsp-tests DISCOVERY_TIMEOUT 30
-    PROPERTIES LABELS "toolchain;lsp" TIMEOUT 60)
+    PROPERTIES LABELS "toolchain\;lsp" TIMEOUT 60)
 
 # ── LSPServer unit tests ──
 # Recompiles LSPServer.cpp directly so test-only seams (e.g. private-member
@@ -46,7 +46,7 @@ target_compile_definitions(topo-lsp-server-tests PRIVATE
     TOPO_LSP_FIXTURES_DIR="${PROJECT_SOURCE_DIR}/test/fixtures")
 topo_lsp_set_compiler_flags(topo-lsp-server-tests)
 gtest_discover_tests(topo-lsp-server-tests DISCOVERY_TIMEOUT 30
-    PROPERTIES LABELS "toolchain;lsp" TIMEOUT 60)
+    PROPERTIES LABELS "toolchain\;lsp" TIMEOUT 60)
 
 # ── Fake LSP/JSON-RPC server ──
 # Deliberately broken stdio server the *BridgeMalformedResponseHandled tests
@@ -141,7 +141,7 @@ if(NOT WIN32)
     add_dependencies(topo-lsp-protocol-tests topo-lsp)
     topo_lsp_set_compiler_flags(topo-lsp-protocol-tests)
     gtest_discover_tests(topo-lsp-protocol-tests DISCOVERY_TIMEOUT 30
-        PROPERTIES LABELS "toolchain;lsp-protocol" TIMEOUT 60)
+        PROPERTIES LABELS "toolchain\;lsp-protocol" TIMEOUT 60)
 endif()
 
 # ── Python-driven end-to-end LSP tests ──
