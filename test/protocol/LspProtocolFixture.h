@@ -343,7 +343,11 @@ private:
     std::condition_variable responseCv_;
     std::unordered_map<int, json> pendingResponses_;
     std::deque<json> notifications_;
-    bool readerExited_ = false;
+    // Set by the reader thread on exit, read by the destructor WITHOUT holding
+    // responseMutex_ (line ~65) as well as by the mutex-guarded wait paths.
+    // Making it atomic removes the destructor data race while leaving the
+    // condition-variable predicate reads correct.
+    std::atomic<bool> readerExited_{false};
 };
 
 // Helper: given a LSP response object, return true iff it contains a well-formed

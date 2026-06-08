@@ -28,6 +28,80 @@ namespace fs = std::filesystem;
 
 namespace topo::lsp {
 
+namespace {
+
+// Update the running brace depth for a C-family line (C/C++/Java/Rust), counting
+// only `{`/`}` that are NOT inside a string literal, char literal, line comment,
+// or block comment. `inBlockComment` carries the `/* ... */` state across lines.
+//
+// Without this masking a `{` or `}` appearing inside a string/char/comment
+// (e.g. `printf("}");` or `// closing }`) shifted the namespace/scope depth and
+// desynced qualified-name resolution. The depth is also floored at 0 so a stray
+// or in-literal `}` cannot drive it negative and corrupt the scope stack.
+inline void updateBraceDepth(const std::string& line, int& braceDepth, bool& inBlockComment) {
+    const size_t n = line.size();
+    for (size_t i = 0; i < n; ++i) {
+        char c = line[i];
+
+        if (inBlockComment) {
+            if (c == '*' && i + 1 < n && line[i + 1] == '/') {
+                inBlockComment = false;
+                ++i; // consume '/'
+            }
+            continue;
+        }
+
+        // Line comment — rest of the line is masked.
+        if (c == '/' && i + 1 < n && line[i + 1] == '/') break;
+        // Block comment open.
+        if (c == '/' && i + 1 < n && line[i + 1] == '*') {
+            inBlockComment = true;
+            ++i; // consume '*'
+            continue;
+        }
+
+        // String literal — skip to the matching unescaped closing quote.
+        if (c == '"') {
+            ++i;
+            while (i < n) {
+                if (line[i] == '\\') {
+                    ++i; // skip the escaped char
+                } else if (line[i] == '"') {
+                    break;
+                }
+                ++i;
+            }
+            continue;
+        }
+
+        // Char literal — only treat `'` as a char-literal opener when it forms a
+        // plausible char literal (`'x'` or `'\n'`); otherwise leave it alone so a
+        // Rust lifetime (`'a`) is not mistaken for an unterminated literal.
+        if (c == '\'') {
+            size_t j = i + 1;
+            if (j < n && line[j] == '\\') {
+                j += 2; // escape: backslash + escaped char
+            } else {
+                j += 1; // single char
+            }
+            if (j < n && line[j] == '\'') {
+                i = j; // consume through the closing quote
+                continue;
+            }
+            // Not a char literal (e.g. a lifetime) — fall through, count nothing.
+            continue;
+        }
+
+        if (c == '{') {
+            ++braceDepth;
+        } else if (c == '}') {
+            if (braceDepth > 0) --braceDepth;
+        }
+    }
+}
+
+} // namespace
+
 // ============================================================================
 // HostFunctionIndex implementation
 // ============================================================================
@@ -64,6 +138,7 @@ void HostFunctionIndex::scanCppFile(const std::string& filepath) {
     std::string line;
     int lineNum = 0;
     int braceDepth = 0;
+    bool inBlockComment = false;
     // Track brace depth at which each namespace was entered
     std::stack<int> nsDepths;
 
@@ -76,18 +151,13 @@ void HostFunctionIndex::scanCppFile(const std::string& filepath) {
     while (std::getline(file, line)) {
         ++lineNum;
 
-        // Track braces for namespace scope
-        for (char c : line) {
-            if (c == '{') {
-                ++braceDepth;
-            } else if (c == '}') {
-                --braceDepth;
-                // Pop namespace if we're back to its entry depth
-                if (!nsDepths.empty() && braceDepth == nsDepths.top()) {
-                    nsStack.pop();
-                    nsDepths.pop();
-                }
-            }
+        // Track braces for namespace scope, ignoring those inside string/char
+        // literals and comments, then pop every namespace whose entry depth we
+        // have returned to (a single `}` line can close more than one).
+        updateBraceDepth(line, braceDepth, inBlockComment);
+        while (!nsDepths.empty() && braceDepth <= nsDepths.top()) {
+            nsStack.pop();
+            nsDepths.pop();
         }
 
         // Check for namespace declaration
@@ -158,21 +228,19 @@ void HostFunctionIndex::scanRustFile(const std::string& filepath) {
     std::string line;
     int lineNum = 0;
     int braceDepth = 0;
+    bool inBlockComment = false;
 
     while (std::getline(file, line)) {
         ++lineNum;
 
-        // Track braces for module scope
-        for (char c : line) {
-            if (c == '{') {
-                ++braceDepth;
-            } else if (c == '}') {
-                --braceDepth;
-                if (!modDepths.empty() && braceDepth == modDepths.top()) {
-                    modStack.pop();
-                    modDepths.pop();
-                }
-            }
+        // Track braces for module scope, ignoring those inside string/char
+        // literals and comments (char-literal handling leaves Rust lifetimes
+        // like `'a` untouched), then pop every module whose entry depth we
+        // have returned to.
+        updateBraceDepth(line, braceDepth, inBlockComment);
+        while (!modDepths.empty() && braceDepth <= modDepths.top()) {
+            modStack.pop();
+            modDepths.pop();
         }
 
         // Check for module declaration
@@ -251,37 +319,58 @@ void HostFunctionIndex::scanJavaFile(const std::string& filepath) {
     // Regex for Java method definitions: capture the identifier before '('
     // Avoids catastrophic backtracking from overlapping \s in character classes.
     std::regex funcDefRegex(R"(\b(\w+)\s*\()");
-    // Regex for class/interface declarations (to build qualified scope)
+    // Regex for class/interface declarations (to build qualified scope).
+    // The opening `{` is NOT required on the declaration line — standard Java
+    // style puts it on the next line — so scope entry depth is resolved lazily
+    // (see the `entered` flag below) rather than assuming `braceDepth - 1`.
     std::regex classRegex(
         R"(^\s*(?:(?:public|private|protected|static|abstract|final)\s+)*(?:class|interface|enum)\s+(\w+))");
 
-    std::stack<std::string> scopeStack;
-    std::stack<int> scopeDepths;
+    // A scope is recorded at the brace depth that exists *before* its body's
+    // opening `{`. `entered` flips true once braceDepth rises above that depth
+    // (the body's `{` was seen, possibly on a later line), which is what makes
+    // brace-on-next-line work and prevents an immediate spurious pop.
+    struct JavaScope {
+        int depth;
+        std::string name;
+        bool entered;
+    };
+    std::vector<JavaScope> scopes;
     std::string line;
     int lineNum = 0;
     int braceDepth = 0;
+    bool inBlockComment = false;
+
+    auto qualifiedScope = [&]() {
+        std::string q;
+        for (const auto& s : scopes) {
+            if (!q.empty()) q += ".";
+            q += s.name;
+        }
+        return q;
+    };
 
     while (std::getline(file, line)) {
         ++lineNum;
 
-        for (char c : line) {
-            if (c == '{')
-                ++braceDepth;
-            else if (c == '}') {
-                --braceDepth;
-                if (!scopeDepths.empty() && braceDepth == scopeDepths.top()) {
-                    scopeStack.pop();
-                    scopeDepths.pop();
-                }
-            }
-        }
+        int braceDepthBefore = braceDepth;
+        // Count braces ignoring string/char literals and comments.
+        updateBraceDepth(line, braceDepth, inBlockComment);
+        // Mark scopes whose body `{` has now been seen, then pop any entered
+        // scope we have returned to (a single line can close several).
+        for (auto& s : scopes)
+            if (braceDepth > s.depth) s.entered = true;
+        while (!scopes.empty() && scopes.back().entered && braceDepth <= scopes.back().depth)
+            scopes.pop_back();
 
-        // Check for class/interface declaration — track scope only
+        // Check for class/interface declaration — track scope only. Record the
+        // depth that existed before this line; the `{` may be here or on a later
+        // line, and `entered` resolves which.
         std::smatch classMatch;
         if (std::regex_search(line, classMatch, classRegex)) {
             std::string className = classMatch[1].str();
-            scopeStack.push(className);
-            scopeDepths.push(braceDepth - 1);
+            bool enteredNow = braceDepth > braceDepthBefore; // `{` on this same line
+            scopes.push_back(JavaScope{braceDepthBefore, className, enteredNow});
             continue;
         }
 
@@ -299,21 +388,8 @@ void HostFunctionIndex::scanJavaFile(const std::string& filepath) {
             }
             if (isKeyword) continue;
 
-            // Build qualified name from scope stack
-            std::string qualified;
-            {
-                std::vector<std::string> parts;
-                std::stack<std::string> tmp = scopeStack;
-                while (!tmp.empty()) {
-                    parts.push_back(tmp.top());
-                    tmp.pop();
-                }
-                std::reverse(parts.begin(), parts.end());
-                for (const auto& p : parts) {
-                    if (!qualified.empty()) qualified += ".";
-                    qualified += p;
-                }
-            }
+            // Build qualified name from the enclosing class/interface scopes.
+            std::string qualified = qualifiedScope();
             if (!qualified.empty()) qualified += ".";
             qualified += funcName;
 
@@ -338,12 +414,19 @@ void HostFunctionIndex::scanPythonFile(const std::string& filepath) {
         ++lineNum;
         if (line.empty() || line.find_first_not_of(" \t") == std::string::npos) continue;
 
+        // Compute the indentation column treating a tab as advancing to the
+        // next multiple of 4 (a tab is worth 4 *columns*, not a flat +4 added
+        // mid-run). The naive `indent += 4` over-counts when a tab follows
+        // spaces (e.g. two spaces + tab is column 4, not 6), mis-leveling scope
+        // on mixed space/tab indentation. Rounding to the tab stop matches how
+        // Python compares indentation and keeps mixed indents consistent.
+        constexpr int kTabWidth = 4;
         int indent = 0;
         for (char c : line) {
             if (c == ' ')
                 ++indent;
             else if (c == '\t')
-                indent += 4;
+                indent += kTabWidth - (indent % kTabWidth);
             else
                 break;
         }
@@ -1503,10 +1586,31 @@ json LSPServer::handleDefinition(const json& id, const json& params) {
                 }
             }
 
-            // 2. If file found, search for the type name in it.
+            // 2. If file found, search for the type's DEFINITION in it.
+            //    Jumping to the first textual occurrence lands on a forward
+            //    declaration, a member use, or even a comment. Prefer a line
+            //    where the name is introduced by a definition keyword
+            //    (class/struct/enum/union/interface/trait/type/using/typedef/
+            //    typename), and only fall back to the first plain word-boundary
+            //    occurrence when no definition-shaped line exists.
             if (!resolvedFile.empty()) {
                 std::ifstream file(resolvedFile);
                 if (file.is_open()) {
+                    // Definition keyword immediately preceding the type name,
+                    // e.g. `class Foo`, `struct Foo`, `pub struct Foo`,
+                    // `typedef ... Foo`. We match `<kw> ... <name>` permissively
+                    // since the keyword may be several tokens before the name
+                    // (e.g. `typedef struct {...} Foo;`).
+                    static const std::regex defKwRe(
+                        R"(\b(?:class|struct|enum|union|interface|trait|typename|typedef|using|type)\b)");
+
+                    struct Hit {
+                        int line;
+                        int col;
+                    };
+                    std::optional<Hit> defHit;   // definition-shaped match
+                    std::optional<Hit> plainHit; // first plain word-boundary match
+
                     std::string fileLine;
                     int lineNo = 0;
                     while (std::getline(file, fileLine)) {
@@ -1520,18 +1624,30 @@ json LSPServer::handleDefinition(const json& id, const json& params) {
                             (pos + imp.typeName.size() >= fileLine.size()) ||
                             (!std::isalnum(static_cast<unsigned char>(fileLine[pos + imp.typeName.size()])) &&
                              fileLine[pos + imp.typeName.size()] != '_');
-                        if (leftOk && rightOk) {
-                            std::string tgtUri = pathToUri(resolvedFile);
-                            return json{{"jsonrpc", "2.0"},
-                                        {"id", id},
-                                        {"result",
-                                         {{"uri", tgtUri},
-                                          {"range",
-                                           {{"start", {{"line", lineNo - 1}, {"character", static_cast<int>(pos)}}},
-                                            {"end",
-                                             {{"line", lineNo - 1},
-                                              {"character", static_cast<int>(pos + imp.typeName.size())}}}}}}}};
+                        if (!(leftOk && rightOk)) continue;
+
+                        if (!plainHit) plainHit = Hit{lineNo - 1, static_cast<int>(pos)};
+
+                        // A definition introduces the name with a def keyword
+                        // appearing before it on the same line.
+                        std::string prefix = fileLine.substr(0, pos);
+                        if (!defHit && std::regex_search(prefix, defKwRe)) {
+                            defHit = Hit{lineNo - 1, static_cast<int>(pos)};
+                            break; // first real definition wins
                         }
+                    }
+
+                    auto hit = defHit ? defHit : plainHit;
+                    if (hit) {
+                        std::string tgtUri = pathToUri(resolvedFile);
+                        int endCol = hit->col + static_cast<int>(imp.typeName.size());
+                        return json{{"jsonrpc", "2.0"},
+                                    {"id", id},
+                                    {"result",
+                                     {{"uri", tgtUri},
+                                      {"range",
+                                       {{"start", {{"line", hit->line}, {"character", hit->col}}},
+                                        {"end", {{"line", hit->line}, {"character", endCol}}}}}}}};
                     }
                 }
             }
@@ -1685,28 +1801,55 @@ json LSPServer::handleReferences(const json& id, const json& params) {
         return json{{"jsonrpc", "2.0"}, {"id", id}, {"result", json::array()}};
     }
 
+    // LSP `textDocument/references` carries `context.includeDeclaration`. When
+    // true the declaration's own location must be part of the result; the prior
+    // implementation always dropped it. Default to `true` when the field is
+    // absent/malformed (the inclusive, spec-typical behavior), guarding the read
+    // so a wrong-typed value cannot throw.
+    bool includeDeclaration = true;
+    if (params.contains("context") && params["context"].is_object()) {
+        const auto& ctx = params["context"];
+        if (ctx.contains("includeDeclaration") && ctx["includeDeclaration"].is_boolean()) {
+            includeDeclaration = ctx["includeDeclaration"].get<bool>();
+        }
+    }
+
     const auto& symbols = cacheIt->second.symbols;
     auto candidates = qualifiedCandidates(uri, ident);
 
     json locations = json::array();
 
-    for (const auto& qname : candidates) {
-        // Check if this qualified name exists
-        bool found = symbols.findFunction(qname) || symbols.findLogicBlock(qname) || symbols.findClassSymbol(qname) ||
-                     symbols.findTypeAlias(qname) || symbols.findConstraintSymbol(qname);
-        if (!found) continue;
+    auto pushLocation = [&](const SourceLocation& loc) {
+        int l = std::max(0, loc.line - 1);
+        int c = std::max(0, loc.column - 1);
+        std::string locUri = loc.file.empty() ? uri : pathToUri(loc.file);
+        locations.push_back({{"uri", locUri},
+                             {"range",
+                              {{"start", {{"line", l}, {"character", c}}},
+                               {"end", {{"line", l}, {"character", c}}}}}});
+    };
 
-        // Collect call sites where callee matches
+    for (const auto& qname : candidates) {
+        // Locate the declaration of this qualified name across symbol kinds.
+        const SourceLocation* declLoc = nullptr;
+        if (const auto* fn = symbols.findFunction(qname))
+            declLoc = &fn->location;
+        else if (const auto* lb = symbols.findLogicBlock(qname))
+            declLoc = &lb->location;
+        else if (const auto* cls = symbols.findClassSymbol(qname))
+            declLoc = &cls->location;
+        else if (const auto* ta = symbols.findTypeAlias(qname))
+            declLoc = &ta->location;
+        else if (const auto* cstr = symbols.findConstraintSymbol(qname))
+            declLoc = &cstr->location;
+        if (!declLoc) continue;
+
+        // Include the declaration first when requested.
+        if (includeDeclaration) pushLocation(*declLoc);
+
+        // Collect call sites where callee matches.
         for (const auto& cs : symbols.callSites()) {
-            if (cs.callee == qname) {
-                int refLine = std::max(0, cs.loc.line - 1);
-                int refCol = std::max(0, cs.loc.column - 1);
-                std::string refUri = cs.loc.file.empty() ? uri : pathToUri(cs.loc.file);
-                locations.push_back({{"uri", refUri},
-                                     {"range",
-                                      {{"start", {{"line", refLine}, {"character", refCol}}},
-                                       {"end", {{"line", refLine}, {"character", refCol}}}}}});
-            }
+            if (cs.callee == qname) pushLocation(cs.loc);
         }
         break; // Found the symbol, stop searching candidates
     }
@@ -2581,7 +2724,15 @@ json LSPServer::handleSemanticTokensFull(const json& id, const json& params) {
 
         // Literals
         case TokenKind::IntegerLiteral: tokenType = TT_NUMBER; break;
-        case TokenKind::StringLiteral: tokenType = TT_STRING; break;
+        case TokenKind::StringLiteral:
+            tokenType = TT_STRING;
+            // The lexer records a string literal's `text` as the inner content
+            // only (quotes stripped) and its `column` at the opening quote, so
+            // `length = text.size()` highlights two characters too short —
+            // it omits the surrounding quotes. Widen by 2 to cover `"` … `"`
+            // so the highlighted range matches the actual token extent.
+            length += 2;
+            break;
 
         // Operators
         case TokenKind::Assign:

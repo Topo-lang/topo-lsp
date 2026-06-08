@@ -224,6 +224,27 @@ TEST(LspProtocolHandshake, MalformedRequestDoesNotCrashServer) {
     EXPECT_TRUE(responseHasResult(okResp));
 }
 
+TEST(LspProtocolHandshake, RapidConstructDestructNoReaderExitedRace) {
+    // Regression guard for the harness data race on `readerExited_`: the
+    // destructor reads it WITHOUT holding responseMutex_ while the reader thread
+    // writes it on exit. Making the flag atomic removes the race. This test
+    // drives exactly that window — bring each client up, then immediately tear
+    // it down (shutdown+exit) so the destructor's readerExited_ read races the
+    // reader thread's exit-time write. With the field atomic this completes
+    // cleanly; under TSan the prior plain-bool version flags the race here.
+    for (int i = 0; i < 8; ++i) {
+        LspProtocolClient client{kLspBinary};
+        ASSERT_TRUE(responseHasResult(client.initialize(nullptr)));
+        client.initialized();
+        // Ask the server to shut its loop so the reader thread is observing EOF
+        // right as the destructor runs and reads readerExited_.
+        ASSERT_TRUE(responseHasResult(client.shutdown()));
+        client.exit();
+        // Destructor runs at end of scope: it checks readerExited_ unlocked.
+    }
+    SUCCEED() << "rapid construct/destruct with reader-thread exit must not race";
+}
+
 TEST(LspProtocolHandshake, UnknownRequestReturnsMethodNotFound) {
     // Per JSON-RPC 2.0, an unknown method on a request (has id) must produce
     // error code -32601 (Method not found).

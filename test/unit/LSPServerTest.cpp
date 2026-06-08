@@ -2,6 +2,7 @@
 #include "topo/Stdlib/Types.h"
 
 #include <gtest/gtest.h>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <set>
@@ -1118,5 +1119,333 @@ TEST_F(LSPServerTest, CanonicalSyntaxNoExtraDiagnostics) {
                     << "Canonical syntax should not produce non-canonical-syntax diagnostics";
             }
         }
+    }
+}
+
+// ============================================================================
+// HostFunctionIndex scanner accuracy heuristics
+// (brace/comment masking, Java brace-on-next-line, Python tab-as-4)
+// ============================================================================
+
+namespace {
+// Write `content` to a uniquely-named temp file with `ext` and return its path.
+std::string writeTempSource(const std::string& ext, const std::string& content) {
+    static int counter = 0;
+    namespace fs = std::filesystem;
+    fs::path p = fs::temp_directory_path() /
+                 ("topo_lsp_scan_" + std::to_string(counter++) + ext);
+    std::ofstream out(p);
+    out << content;
+    out.close();
+    return p.string();
+}
+} // namespace
+
+// A `{` or `}` inside a string literal or comment must NOT shift namespace depth.
+// Before the fix, the `}` in `printf("}")` decremented braceDepth and popped the
+// namespace early, so `inner::deep` resolved as just `deep` (qualified lookup
+// failed). The function defined after the noisy line must still be qualified
+// under the full namespace path.
+TEST(HostFunctionIndexScan, BraceInStringAndCommentDoesNotDesyncScope) {
+    std::string src =
+        "namespace outer {\n"
+        "namespace inner {\n"
+        "  void noisy() {\n"
+        "    const char* s = \"a } b { c\"; // a stray } and { in a comment }\n"
+        "  }\n"
+        "  void target() {\n"
+        "  }\n"
+        "}\n"
+        "}\n";
+    std::string path = writeTempSource(".cpp", src);
+
+    HostFunctionIndex idx;
+    idx.scanFile(path);
+
+    // The fully-qualified name must be intact — proving the in-literal/in-comment
+    // braces did not collapse the namespace stack.
+    EXPECT_NE(idx.find("outer::inner::target"), nullptr)
+        << "in-string/in-comment braces must not desync namespace depth";
+    EXPECT_NE(idx.find("outer::inner::noisy"), nullptr);
+
+    std::filesystem::remove(path);
+}
+
+// A stray `}` (e.g. inside a string) must not drive braceDepth negative and
+// corrupt the scope stack for symbols that follow.
+TEST(HostFunctionIndexScan, StrayCloseBraceFlooredAtZero) {
+    std::string src =
+        "const char* leading = \"}}}\";\n" // three stray closers before any scope
+        "namespace app {\n"
+        "  void keep() {\n"
+        "  }\n"
+        "}\n";
+    std::string path = writeTempSource(".cpp", src);
+
+    HostFunctionIndex idx;
+    idx.scanFile(path);
+
+    EXPECT_NE(idx.find("app::keep"), nullptr)
+        << "leading in-string closers must not push braceDepth negative";
+
+    std::filesystem::remove(path);
+}
+
+// Standard Java style puts the class's opening brace on the NEXT line. The class
+// scope must still wrap the methods defined inside it.
+TEST(HostFunctionIndexScan, JavaBraceOnNextLineScopesMethods) {
+    std::string src =
+        "public class Widget\n" // brace on the next line
+        "{\n"
+        "    public void render()\n"
+        "    {\n"
+        "    }\n"
+        "}\n";
+    std::string path = writeTempSource(".java", src);
+
+    HostFunctionIndex idx;
+    idx.scanFile(path);
+
+    EXPECT_NE(idx.find("Widget.render"), nullptr)
+        << "Java class with brace-on-next-line must still qualify its methods";
+
+    std::filesystem::remove(path);
+}
+
+// Brace-on-same-line Java must keep working too (no regression), and the scope
+// must pop so a sibling top-level class's method is NOT mis-nested.
+TEST(HostFunctionIndexScan, JavaBraceSameLineAndScopePop) {
+    std::string src =
+        "class A {\n"
+        "    void m1() {}\n"
+        "}\n"
+        "class B {\n"
+        "    void m2() {}\n"
+        "}\n";
+    std::string path = writeTempSource(".java", src);
+
+    HostFunctionIndex idx;
+    idx.scanFile(path);
+
+    EXPECT_NE(idx.find("A.m1"), nullptr);
+    EXPECT_NE(idx.find("B.m2"), nullptr) << "scope A must pop before B is entered";
+    // m2 must NOT be mis-qualified under A.
+    EXPECT_EQ(idx.find("A.m2"), nullptr) << "B.m2 must not be nested under A";
+
+    std::filesystem::remove(path);
+}
+
+// A leading tab indents to the next multiple of 4 (tab stop), not a flat +4.
+// Two spaces followed by a tab is column 4 (the tab stop), so a method whose
+// body uses "2 spaces + tab" is at the same level as one using 4 spaces — it
+// must be scoped under the class, not double-nested.
+TEST(HostFunctionIndexScan, PythonTabAsFourTabStop) {
+    // class C:  (col 0)
+    //     def inner():  (4 spaces -> indent 4, nested under C)
+    // \t\tdef deeper(): (two tabs -> tab stop 4 then 8, nested under inner)
+    std::string src =
+        "class C:\n"
+        "    def inner():\n"
+        "\t\tdef deeper():\n"
+        "\t\t\tpass\n";
+    std::string path = writeTempSource(".py", src);
+
+    HostFunctionIndex idx;
+    idx.scanFile(path);
+
+    // inner is under C; deeper is under C.inner (two tabs = column 8 > inner's 4).
+    EXPECT_NE(idx.find("C.inner"), nullptr);
+    EXPECT_NE(idx.find("C.inner.deeper"), nullptr)
+        << "two tabs must count as column 8 (tab stop 4), nesting under inner";
+
+    std::filesystem::remove(path);
+}
+
+// Regression guard on the tab-stop arithmetic itself: "space + tab" lands on
+// the tab stop (column 4), NOT space(1)+4=5. A sibling def at 4 real spaces and
+// one at "space + 3 spaces" worth via tab must be at the SAME scope depth.
+TEST(HostFunctionIndexScan, PythonSpaceThenTabRoundsToTabStop) {
+    // class C:
+    //     def a():     (4 spaces, depth 4)
+    //         pass
+    // ' \t' before def b -> 1 space then tab rounds to column 4 -> sibling of a.
+    std::string src =
+        "class C:\n"
+        "    def a():\n"
+        "        pass\n"
+        " \tdef b():\n"
+        "        pass\n";
+    std::string path = writeTempSource(".py", src);
+
+    HostFunctionIndex idx;
+    idx.scanFile(path);
+
+    // Both a and b are direct children of C (same indent column 4).
+    EXPECT_NE(idx.find("C.a"), nullptr);
+    EXPECT_NE(idx.find("C.b"), nullptr)
+        << "'space + tab' must round to column 4 (sibling of the 4-space def)";
+
+    std::filesystem::remove(path);
+}
+
+// ============================================================================
+// std::import go-to-definition: prefer the DEFINITION, not the first occurrence
+// ============================================================================
+
+// When the resolved header mentions the type name on an earlier line (forward
+// declaration / use) before its real definition, definition must land on the
+// `class <Name>` line, not the first textual hit.
+TEST_F(LSPServerTest, StdImportDefinitionPrefersDefinitionLine) {
+    namespace fs = std::filesystem;
+    // Create a temp workspace with a header that has a forward-declaration of
+    // Widget on line 1 and the real definition on line 3.
+    fs::path dir = fs::temp_directory_path() / "topo_lsp_import_def";
+    fs::create_directories(dir);
+    fs::path header = dir / "widget.h";
+    {
+        std::ofstream out(header);
+        out << "// forward use of Widget below\n" // line 1 (0-based 0)
+               "Widget* makeWidget();\n"          // line 2: first textual Widget (0-based 1)
+               "class Widget {\n"                 // line 3: the real definition (0-based 2)
+               "  int x;\n"
+               "};\n";
+    }
+
+    // .topo importing Widget relative to its own directory.
+    std::string topoSource =
+        "std::import(\"widget.h\", Widget);\n"
+        "\n"
+        "namespace app {\n"
+        "    public:\n"
+        "        Widget make();\n"
+        "}\n";
+    std::string uri = "file://" + (dir / "app.topo").string();
+    openDocument(uri, topoSource);
+
+    // Definition on "Widget" at the std::import declaration (line 0).
+    // "Widget" spans columns 24-29; column 26 sits inside the token.
+    json defMsg = {{"jsonrpc", "2.0"},
+                   {"id", 500},
+                   {"method", "textDocument/definition"},
+                   {"params", {{"textDocument", {{"uri", uri}}}, {"position", {{"line", 0}, {"character", 26}}}}}};
+    auto resp = server_.handleMessage(defMsg);
+    ASSERT_TRUE(resp.has_value());
+    auto& result = (*resp)["result"];
+    ASSERT_FALSE(result.is_null()) << "definition should resolve into the header";
+
+    // Must land on the `class Widget {` line (0-based line 2), NOT the forward
+    // use on 0-based line 1.
+    int defLine = result["range"]["start"]["line"].get<int>();
+    EXPECT_EQ(defLine, 2)
+        << "std::import definition must jump to the class definition, not the first occurrence";
+
+    fs::remove_all(dir);
+}
+
+// ============================================================================
+// Semantic-token string-literal highlight length (off-by-2 regression)
+// ============================================================================
+
+// A string literal's semantic token must cover BOTH surrounding quotes. The
+// lexer reports the inner content as `text` and the column at the opening quote,
+// so `length = text.size()` was two characters short. Verify the emitted token
+// length equals the full quoted span (content + 2 quotes).
+TEST_F(LSPServerTest, SemanticTokenStringLiteralIncludesQuotes) {
+    // A bare string literal on its own line is lexed as a single StringLiteral
+    // token at a known column, so we can assert its emitted length exactly.
+    std::string source =
+        "namespace s {\n"
+        "    public:\n"
+        "        void f();\n"
+        "}\n"
+        "\"hi\"\n"; // line 4 (0-based): a bare string literal token at column 0
+    std::string uri = "file:///test/string_highlight.topo";
+    openDocument(uri, source);
+
+    json semMsg = {{"jsonrpc", "2.0"},
+                   {"id", 510},
+                   {"method", "textDocument/semanticTokens/full"},
+                   {"params", {{"textDocument", {{"uri", uri}}}}}};
+    auto resp = server_.handleMessage(semMsg);
+    ASSERT_TRUE(resp.has_value());
+    auto& data = (*resp)["result"]["data"];
+    ASSERT_TRUE(data.is_array());
+    ASSERT_EQ(data.size() % 5, 0u);
+
+    // TT_STRING == 7 per the LSPServer token-type enum.
+    constexpr int kTtString = 7;
+    bool foundString = false;
+    for (size_t i = 0; i + 4 < data.size(); i += 5) {
+        int len = data[i + 2].get<int>();
+        int tType = data[i + 3].get<int>();
+        if (tType == kTtString) {
+            foundString = true;
+            // "hi" with quotes is 4 characters: " h i " -> length 4.
+            EXPECT_EQ(len, 4)
+                << "string literal token must span both quotes (content 2 + 2 quotes)";
+        }
+    }
+    EXPECT_TRUE(foundString) << "expected a string-literal semantic token";
+}
+
+// ============================================================================
+// handleReferences: honor context.includeDeclaration
+// ============================================================================
+
+// With includeDeclaration=true the result must contain the declaration location
+// in addition to call sites; with includeDeclaration=false it must be omitted.
+TEST_F(LSPServerTest, ReferencesIncludeDeclarationToggles) {
+    std::string source =
+        "namespace app {\n"
+        "    public:\n"
+        "        void fetch();\n"   // declaration at line 2
+        "        void decode();\n"
+        "        void run();\n"
+        "\n"
+        "        fn run {\n"
+        "            fetch -> decode;\n" // call site of fetch
+        "            decode -> void;\n"
+        "        }\n"
+        "}\n";
+    std::string uri = "file:///test/refs_decl.topo";
+    openDocument(uri, source);
+
+    auto queryRefs = [&](bool includeDecl) -> json {
+        json msg = {{"jsonrpc", "2.0"},
+                    {"id", 520},
+                    {"method", "textDocument/references"},
+                    {"params",
+                     {{"textDocument", {{"uri", uri}}},
+                      {"position", {{"line", 2}, {"character", 13}}}, // on "fetch" declaration
+                      {"context", {{"includeDeclaration", includeDecl}}}}}};
+        auto resp = server_.handleMessage(msg);
+        EXPECT_TRUE(resp.has_value());
+        return (*resp)["result"];
+    };
+
+    json withDecl = queryRefs(true);
+    json withoutDecl = queryRefs(false);
+    ASSERT_TRUE(withDecl.is_array());
+    ASSERT_TRUE(withoutDecl.is_array());
+
+    // includeDeclaration=true must yield strictly MORE locations than false
+    // (the extra one being the declaration itself).
+    EXPECT_GT(withDecl.size(), withoutDecl.size())
+        << "includeDeclaration=true must add the declaration location";
+
+    // The declaration of fetch sits on 0-based line 2; with includeDeclaration
+    // true, that line must appear among the results.
+    bool declPresent = false;
+    for (const auto& loc : withDecl) {
+        if (loc["range"]["start"]["line"].get<int>() == 2) declPresent = true;
+    }
+    EXPECT_TRUE(declPresent) << "declaration line (2) must be present when requested";
+
+    // With includeDeclaration=false the declaration line must NOT be the only
+    // thing — and specifically the pure-declaration line should be absent unless
+    // it is also a call site (it is not here).
+    for (const auto& loc : withoutDecl) {
+        EXPECT_NE(loc["range"]["start"]["line"].get<int>(), 2)
+            << "declaration line must be excluded when includeDeclaration=false";
     }
 }
