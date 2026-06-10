@@ -21,6 +21,7 @@ import subprocess
 import sys
 import os
 from typing import IO, Optional, Tuple
+from urllib.parse import unquote
 
 
 class LspTestSetupError(RuntimeError):
@@ -300,8 +301,13 @@ def main():
     check("definition returns result",
           def_result is not None)
     if def_result:
+        # Compare percent-DECODED forms: the server's pathToUri encodes
+        # everything outside the RFC 3986 unreserved set, so on Windows the
+        # drive colon comes back as %3A ("file:///D%3A/...") while this
+        # driver's plain "file:///" + path keeps the literal ':'. Both
+        # denote the same file; unquote() normalizes either spelling.
         check("definition uri matches current file",
-              sim_lib_uri in def_result.get("uri", ""),
+              unquote(sim_lib_uri) in unquote(def_result.get("uri", "")),
               def_result.get("uri", ""))
 
     # ────────────────────────────────────────────────────────
