@@ -106,48 +106,43 @@ function(_topo_lsp_add_bridge_integration_test lang_lower lang_pascal source tim
 endfunction()
 
 # Bridge integration tests spawn external LSP servers (clangd /
-# rust-analyzer / jdtls / pyright) and exchange real JSON-RPC. On
-# GHA windows-2022 the spawn/handshake reliably runs each test all
-# the way to its per-test TIMEOUT (180-300s × 4 ≈ 12-20 min) — same
-# MinGW-host subprocess pattern that hits every "spawn a built tool"
-# suite we have. Skip on Windows; ubuntu/macOS keep them.
-if(NOT WIN32)
-    _topo_lsp_add_bridge_integration_test(cpp    Cpp    integration/ClangdBridgeTest.cpp       180)
-    _topo_lsp_add_bridge_integration_test(rust   Rust   integration/RustAnalyzerBridgeTest.cpp 120)
-    _topo_lsp_add_bridge_integration_test(java   Java   integration/JdtBridgeTest.cpp          300)
-    _topo_lsp_add_bridge_integration_test(python Python integration/PyrightBridgeTest.cpp      120)
-endif()
+# rust-analyzer / jdtls / pyright) and exchange real JSON-RPC. They run
+# on every platform, Windows included: the platform spawn layer uses a
+# raw Win32 backend there and resolves bare server names against PATH —
+# including .cmd/.bat launchers (jdtls.bat, pyright-langserver.cmd),
+# which it routes through cmd.exe. Suites self-skip per test when the
+# corresponding server is not installed.
+_topo_lsp_add_bridge_integration_test(cpp    Cpp    integration/ClangdBridgeTest.cpp       180)
+_topo_lsp_add_bridge_integration_test(rust   Rust   integration/RustAnalyzerBridgeTest.cpp 120)
+_topo_lsp_add_bridge_integration_test(java   Java   integration/JdtBridgeTest.cpp          300)
+_topo_lsp_add_bridge_integration_test(python Python integration/PyrightBridgeTest.cpp      120)
 
 # ── LSP protocol tests ──
 # Spawn the real topo-lsp binary as a subprocess and exchange framed JSON-RPC
-# messages over stdin/stdout pipes.
-#
-# Windows-skipped: same MinGW-host subprocess hang the bridge integration
-# tests above hit — topo-lsp.exe spawn handshakes never return inside
-# gtest_discover_tests' invocation chain.
-if(NOT WIN32)
-    add_executable(topo-lsp-protocol-tests
-        protocol/LspProtocolHandshakeTest.cpp
-        protocol/LspSyncNotificationsTest.cpp
-        protocol/LspRequestsTest.cpp)
-    target_link_libraries(topo-lsp-protocol-tests PRIVATE
-        topo::core::TopoPlatform
-        nlohmann_json::nlohmann_json
-        GTest::gtest_main)
-    target_include_directories(topo-lsp-protocol-tests PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/protocol)
-    target_compile_definitions(topo-lsp-protocol-tests PRIVATE
-        TOPO_LSP_BINARY="$<TARGET_FILE:topo-lsp>")
-    add_dependencies(topo-lsp-protocol-tests topo-lsp)
-    topo_lsp_set_compiler_flags(topo-lsp-protocol-tests)
-    gtest_discover_tests(topo-lsp-protocol-tests DISCOVERY_TIMEOUT 30
-        PROPERTIES LABELS "toolchain\;lsp-protocol" TIMEOUT 60)
-endif()
+# messages over stdin/stdout pipes (PipedProcess — raw Win32 on Windows).
+add_executable(topo-lsp-protocol-tests
+    protocol/LspProtocolHandshakeTest.cpp
+    protocol/LspSyncNotificationsTest.cpp
+    protocol/LspRequestsTest.cpp)
+target_link_libraries(topo-lsp-protocol-tests PRIVATE
+    topo::core::TopoPlatform
+    nlohmann_json::nlohmann_json
+    GTest::gtest_main)
+target_include_directories(topo-lsp-protocol-tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/protocol)
+target_compile_definitions(topo-lsp-protocol-tests PRIVATE
+    TOPO_LSP_BINARY="$<TARGET_FILE:topo-lsp>")
+add_dependencies(topo-lsp-protocol-tests topo-lsp)
+topo_lsp_set_compiler_flags(topo-lsp-protocol-tests)
+gtest_discover_tests(topo-lsp-protocol-tests DISCOVERY_TIMEOUT 30
+    PROPERTIES LABELS "toolchain\;lsp-protocol" TIMEOUT 60)
 
 # ── Python-driven end-to-end LSP tests ──
-# Same Windows subprocess gotcha — Python spawns topo-lsp.exe and waits.
+# The scripts spawn topo-lsp via TOPO_LSP_EXE and speak framed JSON-RPC over
+# plain subprocess pipes; both are platform-portable (exe suffix, drive-letter
+# file:/// URIs).
 find_package(Python3 QUIET)
-if(Python3_FOUND AND NOT WIN32)
+if(Python3_FOUND)
     add_test(NAME lsp-integration
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/test_lsp.py
         WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})

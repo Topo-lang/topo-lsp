@@ -13,6 +13,15 @@ static std::string fixtureDir() {
     return std::string(TOPO_TEST_FIXTURES_DIR) + "/jdt_test";
 }
 
+static std::string fixtureRootUri() {
+    // file:// URI for the fixture root. POSIX absolute paths already start
+    // with '/'; Windows drive-letter paths (D:/...) need the extra slash or
+    // the drive would parse as the URI authority.
+    std::string dir = fixtureDir();
+    if (!dir.empty() && dir[0] == '/') return "file://" + dir;
+    return "file:///" + dir;
+}
+
 static std::string widgetSourcePath() {
     return fixtureDir() + "/src/main/java/com/example/Widget.java";
 }
@@ -25,11 +34,14 @@ static std::string pointSourcePath() {
     return fixtureDir() + "/src/main/java/com/example/Point.java";
 }
 
-// Returns jdtls executable path if available and responding, else empty string.
-// Runs `jdtls --version` with a short timeout; skips if anything fails.
+// Returns jdtls executable path if available on PATH, else empty string.
+// Pure existence probe; callers skip when it returns empty.
 static std::string findJdtls() {
 #ifdef _WIN32
-    const char* checkCmd = "jdtls --version > NUL 2>&1";
+    // Existence probe mirroring `command -v` below. jdtls ships as a Python
+    // launcher (jdtls.bat on Windows, no .exe), and `--version` is unreliable
+    // across jdtls builds; `where` matches the .bat via PATHEXT.
+    const char* checkCmd = "where jdtls > NUL 2>&1";
 #else
     // --help is faster and more reliable than --version on some jdtls builds;
     // we accept any exit status that indicates the binary ran, then probe
@@ -139,8 +151,7 @@ TEST(JdtBridge, StartFromPathIfAvailable) {
     }
 
     JdtBridge bridge;
-    std::string dir = fixtureDir();
-    std::string rootUri = "file://" + dir;
+    std::string rootUri = fixtureRootUri();
 
     bool started = bridge.start(jdtls, rootUri);
     if (!started) {
@@ -160,7 +171,7 @@ TEST(JdtBridge, FindDefinitionOnKnownMethod) {
     }
 
     JdtBridge bridge;
-    std::string rootUri = "file://" + fixtureDir();
+    std::string rootUri = fixtureRootUri();
     if (!bridge.start(jdtls, rootUri)) {
         GTEST_SKIP() << "jdtls failed to start";
     }
@@ -186,7 +197,7 @@ TEST(JdtBridge, FindReferencesOnKnownMethod) {
     }
 
     JdtBridge bridge;
-    std::string rootUri = "file://" + fixtureDir();
+    std::string rootUri = fixtureRootUri();
     if (!bridge.start(jdtls, rootUri)) {
         GTEST_SKIP() << "jdtls failed to start";
     }
@@ -211,7 +222,7 @@ TEST(JdtBridge, GetHoverInfoReturnsSignature) {
     }
 
     JdtBridge bridge;
-    std::string rootUri = "file://" + fixtureDir();
+    std::string rootUri = fixtureRootUri();
     if (!bridge.start(jdtls, rootUri)) {
         GTEST_SKIP() << "jdtls failed to start";
     }
@@ -233,7 +244,7 @@ TEST(JdtBridge, FindTypeDefinitionOnClass) {
     }
 
     JdtBridge bridge;
-    std::string rootUri = "file://" + fixtureDir();
+    std::string rootUri = fixtureRootUri();
     if (!bridge.start(jdtls, rootUri)) {
         GTEST_SKIP() << "jdtls failed to start";
     }
@@ -257,7 +268,7 @@ TEST(JdtBridge, UnknownSymbolReturnsNullopt) {
     }
 
     JdtBridge bridge;
-    std::string rootUri = "file://" + fixtureDir();
+    std::string rootUri = fixtureRootUri();
     if (!bridge.start(jdtls, rootUri)) {
         GTEST_SKIP() << "jdtls failed to start";
     }
