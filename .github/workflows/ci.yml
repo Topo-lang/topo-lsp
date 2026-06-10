@@ -63,12 +63,20 @@ jobs:
           # pyright ships the pyright-langserver binary the bridge probes for;
           # npm -g puts it on PATH (unlike pip --user's ~/.local/bin).
           npm i -g pyright
-          # jdtls (Eclipse JDT Language Server) — no apt package; use the
-          # published snapshot tarball and expose its launcher on PATH.
-          curl -fsSL -o /tmp/jdtls.tar.gz \
-            https://download.eclipse.org/jdtls/snapshots/jdt-language-server-latest.tar.gz
+          # jdtls (Eclipse JDT Language Server) — no apt package; use a PINNED
+          # milestone tarball (the -latest snapshot is a moving, unverifiable
+          # input), verified against its published SHA-256 BEFORE extraction,
+          # downloaded to an unpredictable mktemp path (not a fixed /tmp name).
+          # Bump both values together; the .sha256 lives next to the tarball:
+          # https://download.eclipse.org/jdtls/milestones/1.58.0/
+          JDTLS_URL="https://download.eclipse.org/jdtls/milestones/1.58.0/jdt-language-server-1.58.0-202604151538.tar.gz"
+          JDTLS_SHA256="2a5bbe55ec91b4325392050dc422cead3220a2459b3766be35e1fff45b4a50d9"
+          jdtls_tmp="$(mktemp -d)"
+          curl -fsSL -o "${jdtls_tmp}/jdtls.tar.gz" "${JDTLS_URL}"
+          echo "${JDTLS_SHA256}  ${jdtls_tmp}/jdtls.tar.gz" | sha256sum -c -
           mkdir -p "${HOME}/jdtls"
-          tar -xzf /tmp/jdtls.tar.gz -C "${HOME}/jdtls"
+          tar -xzf "${jdtls_tmp}/jdtls.tar.gz" -C "${HOME}/jdtls"
+          rm -rf "${jdtls_tmp}"
           printf '#!/usr/bin/env bash\nexec python3 "%s/bin/jdtls" "$@"\n' "${HOME}/jdtls" \
             | sudo tee /usr/local/bin/jdtls >/dev/null
           sudo chmod +x /usr/local/bin/jdtls
