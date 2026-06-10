@@ -72,7 +72,7 @@ jobs:
           JDTLS_URL="https://download.eclipse.org/jdtls/milestones/1.58.0/jdt-language-server-1.58.0-202604151538.tar.gz"
           JDTLS_SHA256="2a5bbe55ec91b4325392050dc422cead3220a2459b3766be35e1fff45b4a50d9"
           jdtls_tmp="$(mktemp -d)"
-          curl -fsSL -o "${jdtls_tmp}/jdtls.tar.gz" "${JDTLS_URL}"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o "${jdtls_tmp}/jdtls.tar.gz" "${JDTLS_URL}"
           echo "${JDTLS_SHA256}  ${jdtls_tmp}/jdtls.tar.gz" | sha256sum -c -
           mkdir -p "${HOME}/jdtls"
           tar -xzf "${jdtls_tmp}/jdtls.tar.gz" -C "${HOME}/jdtls"
@@ -126,7 +126,7 @@ jobs:
           JDTLS_URL="https://download.eclipse.org/jdtls/milestones/1.58.0/jdt-language-server-1.58.0-202604151538.tar.gz"
           JDTLS_SHA256="2a5bbe55ec91b4325392050dc422cead3220a2459b3766be35e1fff45b4a50d9"
           jdtls_tmp="$(mktemp -d)"
-          curl -fsSL -o "${jdtls_tmp}/jdtls.tar.gz" "${JDTLS_URL}"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o "${jdtls_tmp}/jdtls.tar.gz" "${JDTLS_URL}"
           echo "${JDTLS_SHA256}  ${jdtls_tmp}/jdtls.tar.gz" | sha256sum -c -
           mkdir -p "${HOME}/jdtls"
           tar -xzf "${jdtls_tmp}/jdtls.tar.gz" -C "${HOME}/jdtls"
