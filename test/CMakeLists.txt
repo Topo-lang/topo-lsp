@@ -149,9 +149,14 @@ if(Python3_FOUND)
     add_test(NAME lsp-demo-integration
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/test_lsp_demo.py
         WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
+    # PYTHONIOENCODING: the drivers print unicode (e.g. arrows) in their
+    # progress banners; the Windows console default is a legacy codepage
+    # (cp1252) and charmap_encode aborts the whole test on the first
+    # non-encodable character. Force UTF-8 stdout everywhere.
     set_tests_properties(lsp-integration lsp-demo-integration
         PROPERTIES
             LABELS "lsp"
             TIMEOUT 60
-            ENVIRONMENT "TOPO_LSP_EXE=$<TARGET_FILE:topo-lsp>")
+            ENVIRONMENT
+                "TOPO_LSP_EXE=$<TARGET_FILE:topo-lsp>;PYTHONIOENCODING=utf-8")
 endif()
