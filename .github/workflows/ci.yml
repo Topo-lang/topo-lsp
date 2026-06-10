@@ -140,11 +140,15 @@ jobs:
           fi
           cygpath -w "${HOME}/jdtls/bin" >> "${GITHUB_PATH}"
 
-      - name: Set up JDK 17
+      # JDK 21: the pinned jdtls milestone hard-refuses anything older at
+      # launch ("jdtls requires at least Java 21") — on 17 the java bridge
+      # integration cases skipped/failed at spawn, so the live jdtls path
+      # was never actually exercised.
+      - name: Set up JDK 21
         uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '21'
 
       - name: Export GHA cache env (for vcpkg x-gha backend)
         uses: actions/github-script@v8
