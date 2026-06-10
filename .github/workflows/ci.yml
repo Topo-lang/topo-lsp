@@ -72,7 +72,7 @@ jobs:
           JDTLS_URL="https://download.eclipse.org/jdtls/milestones/1.58.0/jdt-language-server-1.58.0-202604151538.tar.gz"
           JDTLS_SHA256="2a5bbe55ec91b4325392050dc422cead3220a2459b3766be35e1fff45b4a50d9"
           jdtls_tmp="$(mktemp -d)"
-          curl -fsSL -o "${jdtls_tmp}/jdtls.tar.gz" "${JDTLS_URL}"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o "${jdtls_tmp}/jdtls.tar.gz" "${JDTLS_URL}"
           echo "${JDTLS_SHA256}  ${jdtls_tmp}/jdtls.tar.gz" | sha256sum -c -
           mkdir -p "${HOME}/jdtls"
           tar -xzf "${jdtls_tmp}/jdtls.tar.gz" -C "${HOME}/jdtls"
@@ -94,11 +94,61 @@ jobs:
           brew install rust-analyzer jdtls
           npm i -g pyright
 
-      - name: Set up JDK 17
+      - name: Install external LSP servers (windows)
+        if: runner.os == 'Windows'
+        run: |
+          set -euo pipefail
+          # Deterministic external LSP servers (see Linux note): the bridge
+          # suites are required to RUN on Windows too, not self-skip. The
+          # platform spawn layer resolves bare server names on PATH including
+          # .cmd/.bat launchers, so npm shims and jdtls.bat work as-is.
+          # clangd: the runner image ships LLVM (clangd.exe included) at
+          # C:\Program Files\LLVM, not always on PATH; install via choco only
+          # if the image ever drops it.
+          if [ ! -x "/c/Program Files/LLVM/bin/clangd.exe" ]; then
+            choco install llvm -y --no-progress
+          fi
+          echo 'C:\Program Files\LLVM\bin' >> "${GITHUB_PATH}"
+          # rust-analyzer: rustup component, then a real rust-analyzer.exe in
+          # ~/.cargo/bin (already on PATH). Copy instead of symlink — symlink
+          # creation needs elevation on Windows.
+          rustup component add rust-analyzer
+          ra="$(rustup which --toolchain stable rust-analyzer 2>/dev/null || rustup which rust-analyzer 2>/dev/null || true)"
+          if [ -n "${ra}" ]; then
+            cp "$(cygpath -u "${ra}")" "${HOME}/.cargo/bin/rust-analyzer.exe"
+          fi
+          # pyright ships pyright-langserver.cmd via npm -g; the runner's npm
+          # global prefix is on PATH.
+          npm i -g pyright
+          # jdtls — same PINNED, sha256-verified milestone as the Linux step
+          # (bump both together; the .sha256 lives next to the tarball):
+          # https://download.eclipse.org/jdtls/milestones/1.58.0/
+          JDTLS_URL="https://download.eclipse.org/jdtls/milestones/1.58.0/jdt-language-server-1.58.0-202604151538.tar.gz"
+          JDTLS_SHA256="2a5bbe55ec91b4325392050dc422cead3220a2459b3766be35e1fff45b4a50d9"
+          jdtls_tmp="$(mktemp -d)"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o "${jdtls_tmp}/jdtls.tar.gz" "${JDTLS_URL}"
+          echo "${JDTLS_SHA256}  ${jdtls_tmp}/jdtls.tar.gz" | sha256sum -c -
+          mkdir -p "${HOME}/jdtls"
+          tar -xzf "${jdtls_tmp}/jdtls.tar.gz" -C "${HOME}/jdtls"
+          rm -rf "${jdtls_tmp}"
+          # The archive ships bin/jdtls.bat (python launcher shim) — that is
+          # what the bare-name `jdtls` spawn resolves. Recreate it if a future
+          # archive drops it, then put bin/ on PATH (Windows-style so the
+          # entry is valid for the test processes' CreateProcess resolution).
+          if [ ! -f "${HOME}/jdtls/bin/jdtls.bat" ]; then
+            printf '@echo off\r\npython "%%~dp0jdtls.py" %%*\r\n' > "${HOME}/jdtls/bin/jdtls.bat"
+          fi
+          cygpath -w "${HOME}/jdtls/bin" >> "${GITHUB_PATH}"
+
+      # JDK 21: the pinned jdtls milestone hard-refuses anything older at
+      # launch ("jdtls requires at least Java 21") — on 17 the java bridge
+      # integration cases skipped/failed at spawn, so the live jdtls path
+      # was never actually exercised.
+      - name: Set up JDK 21
         uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '21'
 
       - name: Export GHA cache env (for vcpkg x-gha backend)
         uses: actions/github-script@v8
@@ -118,7 +168,12 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ${{ runner.temp }}/topo-install
-          key: topo-lsp-deps-core-${{ env.TOPO_CORE_REF }}-lang-${{ env.TOPO_LANG_REF }}-v8-${{ env.TOPO_V8_REF }}-langcpp-${{ env.TOPO_LANG_CPP_REF }}-langrust-${{ env.TOPO_LANG_RUST_REF }}-langjava-${{ env.TOPO_LANG_JAVA_REF }}-langpy-${{ env.TOPO_LANG_PYTHON_REF }}-langts-${{ env.TOPO_LANG_TYPESCRIPT_REF }}-${{ matrix.os }}-v4
+          # The *_REF values are literal branch names ("main"), so the -vN
+          # suffix is the invalidation knob — bump it whenever the suites need
+          # newer upstream bits. v5: topo-core's Windows process layer (raw
+          # Win32 spawn + bare-name .cmd/.bat launcher resolution) that the
+          # Windows bridge/protocol/e2e suites depend on.
+          key: topo-lsp-deps-core-${{ env.TOPO_CORE_REF }}-lang-${{ env.TOPO_LANG_REF }}-v8-${{ env.TOPO_V8_REF }}-langcpp-${{ env.TOPO_LANG_CPP_REF }}-langrust-${{ env.TOPO_LANG_RUST_REF }}-langjava-${{ env.TOPO_LANG_JAVA_REF }}-langpy-${{ env.TOPO_LANG_PYTHON_REF }}-langts-${{ env.TOPO_LANG_TYPESCRIPT_REF }}-${{ matrix.os }}-v5
 
       - name: Build & install topo-core (zero-LLVM, lang-less)
         if: steps.topo-cache.outputs.cache-hit != 'true'
@@ -267,15 +322,14 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure --timeout 300
 
-      - name: Assert live host-bridge round-trips ran (non-Windows)
+      - name: Assert live host-bridge round-trips ran
         # A bridge test is a single ctest entry whose internal gtest cases
         # GTEST_SKIP() when the external server is absent — so "Passed" can mean
         # "every case skipped". This step re-runs each bridge verbosely and FAILS
         # if it reports zero non-skipped (PASSED) cases, converting a silent
-        # all-skip into a hard failure (skip != pass). Windows bridges are
-        # if(NOT WIN32)-excluded by design (an explicit, reasoned exclusion, not
-        # a silent one), so this assertion is ubuntu+macOS-scoped.
-        if: runner.os != 'Windows'
+        # all-skip into a hard failure (skip != pass). All three OSes install
+        # the external servers deterministically, so the assertion covers the
+        # whole matrix, Windows included.
         run: |
           # set +e: handle errors explicitly. GHA wraps run: with `bash -e`, and
           # a grep no-match inside a command substitution would otherwise abort
@@ -284,7 +338,7 @@ jobs:
           fail=0
           for t in topo-lsp-integration-tests topo-lsp-rust-integration-tests \
                    topo-lsp-java-integration-tests topo-lsp-python-integration-tests; do
-            exe=$(find build -type f -name "${t}" 2>/dev/null | head -1)
+            exe=$(find build -type f \( -name "${t}" -o -name "${t}.exe" \) 2>/dev/null | head -1)
             if [ -z "${exe}" ]; then
               echo "::error::bridge ${t}: executable not found under build/"; fail=1; continue
             fi

@@ -43,7 +43,12 @@ static std::string fixtureDir() {
 
 static std::string fixtureRootUri() {
     // Pyright expects a file:// URI without the leading slash duplication.
-    return "file://" + fixtureDir();
+    // POSIX absolute paths already start with '/'; Windows drive-letter
+    // paths (D:/...) need the extra slash or the drive would parse as the
+    // URI authority.
+    std::string dir = fixtureDir();
+    if (!dir.empty() && dir[0] == '/') return "file://" + dir;
+    return "file:///" + dir;
 }
 
 static std::string fixtureFile(const std::string& name) {
