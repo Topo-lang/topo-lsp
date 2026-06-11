@@ -325,36 +325,53 @@ jobs:
       - name: Assert live host-bridge round-trips ran
         # A bridge test is a single ctest entry whose internal gtest cases
         # GTEST_SKIP() when the external server is absent — so "Passed" can mean
-        # "every case skipped". This step re-runs each bridge verbosely and FAILS
-        # if it reports zero non-skipped (PASSED) cases, converting a silent
-        # all-skip into a hard failure (skip != pass). All three OSes install
-        # the external servers deterministically, so the assertion covers the
-        # whole matrix, Windows included.
+        # "every case skipped". This step re-runs each bridge through
+        # .github/scripts/assert-live-cases.sh and FAILS unless every NAMED case
+        # below lands in the gtest passed set (exact-name match): a count-only
+        # guard is trivially satisfied by the always-green offline cases (e.g.
+        # *.InvalidPathFails, *.BridgeMalformedResponseHandled) even when ALL
+        # live cases skip. Mode is lenient (aggregate skips tolerated) because
+        # these suites carry skips that say nothing about server availability:
+        # JdtBridge.RestartCycleIsolatesState skips unconditionally (jdtls cold
+        # start, test/integration/JdtBridgeTest.cpp) and the index-deadline
+        # cases (e.g. ClangdBridge.FindDefinitionOnRealSymbol) skip
+        # nondeterministically — those stay OUT of the named lists; each named
+        # case skips only on server-absent/start-failure. Renaming or filtering
+        # out a named case turns this step red (ABSENT diagnostic) until the
+        # list is updated — intended. All three OSes install the external
+        # servers deterministically, so the assertion covers the whole matrix,
+        # Windows included.
         run: |
-          # set +e: handle errors explicitly. GHA wraps run: with `bash -e`, and
-          # a grep no-match inside a command substitution would otherwise abort
-          # the whole step silently.
-          set +e
           fail=0
-          for t in topo-lsp-integration-tests topo-lsp-rust-integration-tests \
-                   topo-lsp-java-integration-tests topo-lsp-python-integration-tests; do
-            exe=$(find build -type f \( -name "${t}" -o -name "${t}.exe" \) 2>/dev/null | head -1)
-            if [ -z "${exe}" ]; then
-              echo "::error::bridge ${t}: executable not found under build/"; fail=1; continue
-            fi
-            out=$("${exe}" 2>&1); rc=$?
-            passed=$(printf '%s\n' "${out}" | grep -oE '\[  PASSED  \] [0-9]+ test' | grep -oE '[0-9]+' | tail -1)
-            skipped=$(printf '%s\n' "${out}" | grep -oE '\[  SKIPPED \] [0-9]+ test' | grep -oE '[0-9]+' | tail -1)
-            [ -z "${passed}" ] && passed=0
-            [ -z "${skipped}" ] && skipped=0
-            echo "bridge ${t}: ${passed} live PASSED, ${skipped} skipped (exit ${rc})"
-            if [ "${rc}" -ne 0 ]; then
-              printf '%s\n' "${out}" | tail -25
-              echo "::error::bridge ${t}: exited ${rc}"; fail=1
-            elif [ "${passed}" -lt 1 ]; then
-              echo "::error::bridge ${t}: ran 0 non-skipped cases — external server missing or self-skip (skip != pass)"; fail=1
-            fi
-          done
+          bash .github/scripts/assert-live-cases.sh lenient topo-lsp-integration-tests \
+            ClangdBridge.StartFromPathIfAvailable \
+            ClangdBridge.UnknownSymbolReturnsNullopt \
+            ClangdBridge.ConcurrentQueriesSameSession \
+            ClangdBridge.RestartCycleIsolatesState \
+            ClangdBridge.SingleArgStartOverloadAutoDetects \
+            ClangdBridge.IsClangdAvailablePredicateConsistent || fail=1
+          bash .github/scripts/assert-live-cases.sh lenient topo-lsp-rust-integration-tests \
+            RustAnalyzerBridgeLive.StartFromPathIfAvailable \
+            RustAnalyzerBridgeLive.FindDefinitionOnKnownFn \
+            RustAnalyzerBridgeLive.FindReferencesOnKnownFn \
+            RustAnalyzerBridgeLive.GetHoverInfoReturnsSignature \
+            RustAnalyzerBridgeLive.FindTypeDefinitionOnStruct \
+            RustAnalyzerBridgeLive.UnknownSymbolReturnsNullopt \
+            RustAnalyzerBridgeLive.EmptyQualifiedNameReturnsNullopt \
+            RustAnalyzerBridgeLifecycle.RestartCycleIsolatesState || fail=1
+          bash .github/scripts/assert-live-cases.sh lenient topo-lsp-java-integration-tests \
+            JdtBridge.StartFromPathIfAvailable \
+            JdtBridge.FindDefinitionOnKnownMethod \
+            JdtBridge.FindReferencesOnKnownMethod \
+            JdtBridge.GetHoverInfoReturnsSignature \
+            JdtBridge.FindTypeDefinitionOnClass \
+            JdtBridge.UnknownSymbolReturnsNullopt || fail=1
+          bash .github/scripts/assert-live-cases.sh lenient topo-lsp-python-integration-tests \
+            PyrightBridge.StartFromPathIfAvailable \
+            PyrightBridge.FindReferencesOnFunction \
+            PyrightBridge.GetHoverInfoReturnsSignature \
+            PyrightBridge.FindTypeDefinitionOnClass \
+            PyrightBridge.UnknownSymbolReturnsNullopt || fail=1
           [ "${fail}" -eq 0 ]
 
       - name: Install topo-lsp
