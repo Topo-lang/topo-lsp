@@ -19,14 +19,15 @@ env:
   TOPO_LANG_JAVA_REF: main
   TOPO_LANG_PYTHON_REF: main
   TOPO_LANG_TYPESCRIPT_REF: main
-  # Two distinct cpp/rust artifacts must not be conflated:
-  #   - the LLVM-gated PLUGIN aggregator (TopoCppPlugin / TopoRustPlugin) stays
-  #     disabled here (we do NOT set TOPO_LANG_<L>_ENABLE_LLVM), and
-  #   - the LSP BRIDGE (TopoCppLSP / TopoRustLSP), which is in the DEFAULT
-  #     install set (no LLVM needed) and IS required for the cpp/rust bridge
-  #     integration tests to import.
-  # We therefore build+install topo-lang-cpp / topo-lang-rust in default scope
-  # below; otherwise find_package fails and the bridge tests configure-skip.
+  # The default-scope (LLVM OFF) topo-lang-cpp / topo-lang-rust installs below
+  # ship two distinct cpp/rust artifacts:
+  #   - the LSP BRIDGE (TopoCppLSP / TopoRustLSP), required for the cpp/rust
+  #     bridge integration tests to import, and
+  #   - the PLUGIN aggregator (TopoCppPlugin / TopoRustPlugin), no longer
+  #     LLVM-gated upstream, so topo-lsp-server's find_package auto-detection
+  #     registers the cpp/rust plugins here too.
+  # Without these installs find_package fails and the bridge tests
+  # configure-skip.
 
 jobs:
   build-and-test:
@@ -170,10 +171,10 @@ jobs:
           path: ${{ runner.temp }}/topo-install
           # The *_REF values are literal branch names ("main"), so the -vN
           # suffix is the invalidation knob — bump it whenever the suites need
-          # newer upstream bits. v5: topo-core's Windows process layer (raw
-          # Win32 spawn + bare-name .cmd/.bat launcher resolution) that the
-          # Windows bridge/protocol/e2e suites depend on.
-          key: topo-lsp-deps-core-${{ env.TOPO_CORE_REF }}-lang-${{ env.TOPO_LANG_REF }}-v8-${{ env.TOPO_V8_REF }}-langcpp-${{ env.TOPO_LANG_CPP_REF }}-langrust-${{ env.TOPO_LANG_RUST_REF }}-langjava-${{ env.TOPO_LANG_JAVA_REF }}-langpy-${{ env.TOPO_LANG_PYTHON_REF }}-langts-${{ env.TOPO_LANG_TYPESCRIPT_REF }}-${{ matrix.os }}-v5
+          # newer upstream bits. v6: rotate the cached prefix so the
+          # default-scope topo-lang-cpp/rust installs carry the ungated plugin
+          # aggregators (TopoCppPlugin / TopoRustPlugin).
+          key: topo-lsp-deps-core-${{ env.TOPO_CORE_REF }}-lang-${{ env.TOPO_LANG_REF }}-v8-${{ env.TOPO_V8_REF }}-langcpp-${{ env.TOPO_LANG_CPP_REF }}-langrust-${{ env.TOPO_LANG_RUST_REF }}-langjava-${{ env.TOPO_LANG_JAVA_REF }}-langpy-${{ env.TOPO_LANG_PYTHON_REF }}-langts-${{ env.TOPO_LANG_TYPESCRIPT_REF }}-${{ matrix.os }}-v6
 
       - name: Build & install topo-core (zero-LLVM, lang-less)
         if: steps.topo-cache.outputs.cache-hit != 'true'
