@@ -14,8 +14,13 @@ env:
   TOPO_CORE_REF: main
   TOPO_LANG_REF: main
   TOPO_V8_REF: main
-  TOPO_LANG_CPP_REF: main
-  TOPO_LANG_RUST_REF: main
+  # topo-lang-cpp / topo-lang-rust are dev-pinned while the fix batch is on
+  # dev: this repo's plugin prefix picks up the UNGATED TopoCppPlugin /
+  # TopoRustPlugin aggregators (default, zero-LLVM scope) which exist only
+  # on those repos' dev branches. Flip back to main at promotion. The
+  # upstream cache key interpolates these refs, so no suffix bump is needed.
+  TOPO_LANG_CPP_REF: dev
+  TOPO_LANG_RUST_REF: dev
   TOPO_LANG_JAVA_REF: main
   TOPO_LANG_PYTHON_REF: main
   TOPO_LANG_TYPESCRIPT_REF: main
