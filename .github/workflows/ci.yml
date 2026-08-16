@@ -114,12 +114,35 @@ jobs:
           echo 'C:\Program Files\LLVM\bin' >> "${GITHUB_PATH}"
           # rust-analyzer: rustup component, then a real rust-analyzer.exe in
           # ~/.cargo/bin (already on PATH). Copy instead of symlink — symlink
-          # creation needs elevation on Windows.
+          # creation needs elevation on Windows. Every link FAILS FAST with
+          # diagnostics: the pre-fix version silently no-op'd when `rustup
+          # which` came back empty (the `if [ -n ra ]` guard swallowed it),
+          # the rust live cases then skipped 8/8 and the leg stayed green —
+          # the exact gap tracked by the lsp windows live-bridge issue.
           rustup component add rust-analyzer
           ra="$(rustup which --toolchain stable rust-analyzer 2>/dev/null || rustup which rust-analyzer 2>/dev/null || true)"
-          if [ -n "${ra}" ]; then
-            cp "$(cygpath -u "${ra}")" "${HOME}/.cargo/bin/rust-analyzer.exe"
+          echo "rustup which rust-analyzer -> '${ra}'"
+          if [ -z "${ra}" ]; then
+            # Fallback: locate the freshly installed component binary directly
+            # under the toolchain bin dirs (rustup which can come up empty
+            # when the runner's toolchain aliases don't match the expected
+            # names).
+            ra="$(find "${HOME}/.rustup/toolchains" -path '*/bin/rust-analyzer.exe' 2>/dev/null | head -1 || true)"
+            echo "toolchain-bin-glob fallback -> '${ra}'"
           fi
+          if [ -z "${ra}" ]; then
+            echo "::error::rust-analyzer component installed but no rust-analyzer.exe located (rustup which empty AND toolchain bin glob empty). Toolchains present:"
+            ls -la "${HOME}/.rustup/toolchains" 2>&1 || true
+            exit 1
+          fi
+          cp "$(cygpath -u "${ra}")" "${HOME}/.cargo/bin/rust-analyzer.exe"
+          ls -l "${HOME}/.cargo/bin/rust-analyzer.exe"
+          # Fail-fast verification: the copy must EXECUTE, not just exist
+          # (catches a non-self-contained binary), and must resolve as a bare
+          # name the same way the test probe does.
+          "${HOME}/.cargo/bin/rust-analyzer.exe" --version
+          command -v rust-analyzer
+          rust-analyzer --version
           # pyright ships pyright-langserver.cmd via npm -g; the runner's npm
           # global prefix is on PATH.
           npm i -g pyright
@@ -343,13 +366,12 @@ jobs:
         # out a named case turns this step red (ABSENT diagnostic) until the
         # list is updated — intended. All three OSes install the external
         # servers deterministically, so the assertion covers the whole matrix,
-        # Windows included.
-        #
-        # Windows narrowing: the rust-analyzer live cases still skip on
-        # windows-2022 (all 8 — pre-existing, exposed by the named assert;
-        # tracked by the lsp windows live-bridge gap issue). Until that is
-        # root-caused, the windows leg requires the clangd set only; the
-        # linux/macos legs keep the full four-bridge named set.
+        # Windows included. (The 2026-08-15 windows-only narrowing to the
+        # clangd set is REMOVED: the windows install step now fails fast and
+        # prints diagnostics for the rust-analyzer copy instead of silently
+        # no-oping, so the rust suite is asserted on Windows again — if it
+        # still skips there, the leg goes red and the skip-reason echo in
+        # assert-live-cases.sh names the failing probe.)
         run: |
           fail=0
           bash .github/scripts/assert-live-cases.sh lenient topo-lsp-integration-tests \
@@ -359,30 +381,28 @@ jobs:
             ClangdBridge.RestartCycleIsolatesState \
             ClangdBridge.SingleArgStartOverloadAutoDetects \
             ClangdBridge.IsClangdAvailablePredicateConsistent || fail=1
-          if [ "$RUNNER_OS" != "Windows" ]; then
-            bash .github/scripts/assert-live-cases.sh lenient topo-lsp-rust-integration-tests \
-              RustAnalyzerBridgeLive.StartFromPathIfAvailable \
-              RustAnalyzerBridgeLive.FindDefinitionOnKnownFn \
-              RustAnalyzerBridgeLive.FindReferencesOnKnownFn \
-              RustAnalyzerBridgeLive.GetHoverInfoReturnsSignature \
-              RustAnalyzerBridgeLive.FindTypeDefinitionOnStruct \
-              RustAnalyzerBridgeLive.UnknownSymbolReturnsNullopt \
-              RustAnalyzerBridgeLive.EmptyQualifiedNameReturnsNullopt \
-              RustAnalyzerBridgeLifecycle.RestartCycleIsolatesState || fail=1
-            bash .github/scripts/assert-live-cases.sh lenient topo-lsp-java-integration-tests \
-              JdtBridge.StartFromPathIfAvailable \
-              JdtBridge.FindDefinitionOnKnownMethod \
-              JdtBridge.FindReferencesOnKnownMethod \
-              JdtBridge.GetHoverInfoReturnsSignature \
-              JdtBridge.FindTypeDefinitionOnClass \
-              JdtBridge.UnknownSymbolReturnsNullopt || fail=1
-            bash .github/scripts/assert-live-cases.sh lenient topo-lsp-python-integration-tests \
-              PyrightBridge.StartFromPathIfAvailable \
-              PyrightBridge.FindReferencesOnFunction \
-              PyrightBridge.GetHoverInfoReturnsSignature \
-              PyrightBridge.FindTypeDefinitionOnClass \
-              PyrightBridge.UnknownSymbolReturnsNullopt || fail=1
-          fi
+          bash .github/scripts/assert-live-cases.sh lenient topo-lsp-rust-integration-tests \
+            RustAnalyzerBridgeLive.StartFromPathIfAvailable \
+            RustAnalyzerBridgeLive.FindDefinitionOnKnownFn \
+            RustAnalyzerBridgeLive.FindReferencesOnKnownFn \
+            RustAnalyzerBridgeLive.GetHoverInfoReturnsSignature \
+            RustAnalyzerBridgeLive.FindTypeDefinitionOnStruct \
+            RustAnalyzerBridgeLive.UnknownSymbolReturnsNullopt \
+            RustAnalyzerBridgeLive.EmptyQualifiedNameReturnsNullopt \
+            RustAnalyzerBridgeLifecycle.RestartCycleIsolatesState || fail=1
+          bash .github/scripts/assert-live-cases.sh lenient topo-lsp-java-integration-tests \
+            JdtBridge.StartFromPathIfAvailable \
+            JdtBridge.FindDefinitionOnKnownMethod \
+            JdtBridge.FindReferencesOnKnownMethod \
+            JdtBridge.GetHoverInfoReturnsSignature \
+            JdtBridge.FindTypeDefinitionOnClass \
+            JdtBridge.UnknownSymbolReturnsNullopt || fail=1
+          bash .github/scripts/assert-live-cases.sh lenient topo-lsp-python-integration-tests \
+            PyrightBridge.StartFromPathIfAvailable \
+            PyrightBridge.FindReferencesOnFunction \
+            PyrightBridge.GetHoverInfoReturnsSignature \
+            PyrightBridge.FindTypeDefinitionOnClass \
+            PyrightBridge.UnknownSymbolReturnsNullopt || fail=1
           [ "${fail}" -eq 0 ]
 
       - name: Install topo-lsp

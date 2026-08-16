@@ -4,6 +4,12 @@
 #   topo-lsp/.github/scripts/assert-live-cases.sh
 #   topo-lang-{cpp,rust,java,python,typescript}/.github/scripts/assert-live-cases.sh
 # Keep the six copies byte-identical (header carries a sync note).
+# SYNC NOTE (2026-08-16): this topo-lsp copy additionally echoes the gtest
+# skip-REASON line (the text GTEST_SKIP() << ... prints under the case line)
+# into the "required live case was SKIPPED" error, so a red leg names the
+# failing mechanism (probe vs bridge-start) instead of just the case name.
+# The 5 lang-repo copies do not carry this extension yet — propagate or
+# revert per the lsp windows live-bridge gap follow-up.
 #
 # usage: assert-live-cases.sh <strict|lenient> <binary-name> <Suite.Case>...
 #   strict  — additionally FAIL when the suite reports any SKIPPED case
@@ -53,7 +59,11 @@ for name in "$@"; do
   if printf '%s\n' "${out}" | grep -qF "[       OK ] ${name} ("; then
     echo "live case PASSED: ${name}"
   elif printf '%s\n' "${out}" | grep -qF "[  SKIPPED ] ${name}"; then
-    echo "::error::${bin}: required live case was SKIPPED: ${name}"; fail=1
+    # gtest prints the skip reason on the line(s) directly after the case
+    # line — echo it so the log names the failing mechanism (e.g. probe
+    # exec failed vs bridge start failed), not just the case name.
+    reason=$(printf '%s\n' "${out}" | grep -A1 -F "[  SKIPPED ] ${name}" | tail -1)
+    echo "::error::${bin}: required live case was SKIPPED: ${name} (reason: ${reason})"; fail=1
   else
     echo "::error::${bin}: required live case ABSENT from passed set: ${name} (renamed? filtered out? not compiled in?)"; fail=1
   fi

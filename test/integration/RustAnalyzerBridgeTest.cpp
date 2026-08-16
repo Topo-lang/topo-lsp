@@ -41,16 +41,23 @@ static std::string findRustAnalyzer() {
     return std::string{};
 }
 
-// Returns true if `rust-analyzer --version` exits cleanly. Tests that need a
-// live backend call this and `GTEST_SKIP()` on failure.
-static bool rustAnalyzerRunnable(const std::string& exePath) {
+// Runs the `rust-analyzer --version` probe. Returns the probe's exit status:
+// 0 = runnable; non-zero = the bare name failed to resolve on PATH (install
+// gap) or the binary itself exited non-zero. Tests that need a live backend
+// call this and `GTEST_SKIP()` on failure. The status value is surfaced in
+// the skip reason so CI logs distinguish a probe failure from the
+// bridge-start failure below (two different mechanisms, two different fixes).
+static int rustAnalyzerProbeStatus(const std::string& exePath) {
     std::string check = exePath.empty() ? std::string("rust-analyzer") : exePath;
 #ifdef _WIN32
-    int ret = std::system(("\"" + check + "\" --version > NUL 2>&1").c_str());
+    return std::system(("\"" + check + "\" --version > NUL 2>&1").c_str());
 #else
-    int ret = std::system(("\"" + check + "\" --version > /dev/null 2>&1").c_str());
+    return std::system(("\"" + check + "\" --version > /dev/null 2>&1").c_str());
 #endif
-    return ret == 0;
+}
+
+static bool rustAnalyzerRunnable(const std::string& exePath) {
+    return rustAnalyzerProbeStatus(exePath) == 0;
 }
 
 // --- Pure tests (no backend) -----------------------------------------------
@@ -127,14 +134,25 @@ protected:
 
     void SetUp() override {
         exePath = findRustAnalyzer();
-        if (!rustAnalyzerRunnable(exePath)) {
-            GTEST_SKIP() << "rust-analyzer not found on PATH or known Homebrew "
-                            "locations — skipping live-backend tests";
+        int probeStatus = rustAnalyzerProbeStatus(exePath);
+        if (probeStatus != 0) {
+            // The `--version` exec itself failed: the binary is not resolvable
+            // on PATH / not installed (or exits non-zero). Distinct from the
+            // start-failure skip below.
+            GTEST_SKIP() << "rust-analyzer --version probe failed (exit status "
+                         << probeStatus << ") — rust-analyzer not found on PATH "
+                            "or known Homebrew locations; skipping live-backend "
+                            "tests";
         }
 
         bool started = bridge.start(exePath, fixtureRootUri());
         if (!started) {
-            GTEST_SKIP() << "rust-analyzer failed to initialize against fixture";
+            // The probe passed but start failed: the binary resolves and runs,
+            // so this is a spawn/initialize-handshake failure, not a missing
+            // install.
+            GTEST_SKIP() << "rust-analyzer --version probe passed but "
+                            "bridge.start() failed — spawn error or initialize "
+                            "handshake failure; skipping";
         }
         ASSERT_TRUE(bridge.isAvailable());
     }
@@ -275,7 +293,8 @@ TEST(RustAnalyzerBridge, BridgeMalformedResponseHandled) {
 TEST(RustAnalyzerBridgeLifecycle, RestartCycleIsolatesState) {
     std::string exe = findRustAnalyzer();
     if (!rustAnalyzerRunnable(exe)) {
-        GTEST_SKIP() << "rust-analyzer not available";
+        GTEST_SKIP() << "rust-analyzer --version probe failed — rust-analyzer "
+                        "not available";
     }
 
     RustAnalyzerBridge bridge;
