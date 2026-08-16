@@ -137,53 +137,90 @@ jobs:
           fi
           cp "$(cygpath -u "${ra}")" "${HOME}/.cargo/bin/rust-analyzer.exe"
           ls -l "${HOME}/.cargo/bin/rust-analyzer.exe"
-          # 2026-08-16 (first fail-fast run): the copy itself succeeds
-          # (40,010,240-byte exe lands in ~/.cargo/bin) but the FIRST exec of
-          # the fresh copy fails (exit 127) — the classic windows-runner
-          # race: Defender's real-time scan (MpEngine) grabs freshly written
-          # PE files at first launch and the spawn fails (established on GHA
-          # windows runners; pytorch's generated windows workflows and
-          # nowledge-co/con-terminal#42 hit "FileNotFound" on just-built exes
-          # and fix it with Set-MpPreference + ExclusionPath — runners are
-          # Administrator). Mitigation: a non-fatal Defender exclusion for
-          # ~/.cargo/bin (defensive — Defender may be off on the image) PLUS
-          # a retry warm-up, which is the primary mechanism; a persistent
-          # failure still fails the step, with loader-level diagnostics that
-          # name the mechanism (copy integrity, loader error via cmd //c,
-          # copy-vs-original comparison, Defender state).
+          # ROOT CAUSE (verified 2026-08-16, binary-level): the rustup
+          # rust-analyzer component is NOT a standalone exe — it statically
+          # imports the toolchain's rustc_driver-<hash>.dll (verified in
+          # rust-analyzer-1.97.1-x86_64-pc-windows-msvc: import table carries
+          # `rustc_driver-e41b336de1bfe42c.dll`), which ships in the RUSTC
+          # component's bin dir, not in the rust-analyzer-preview component
+          # (whose bin/ holds only rust-analyzer.exe + .pdb). Copying the exe
+          # to ~/.cargo/bin breaks the exe→DLL adjacency the Windows loader
+          # relies on → STATUS_DLL_NOT_FOUND → CreateProcess fails → bash 127
+          # (the linux/macos legs are green because they SYMLINK, preserving
+          # the toolchain dir as the exe's own directory). That also explains
+          # the 8/8 skips since the June un-gating: the copy never executed
+          # on any windows runner. The ladder below installs whichever exec
+          # path works as the bare-name-resolvable mechanism the suite probes:
+          #   rung 1: copied exe in ~/.cargo/bin (expected to fail — see
+          #           above; kept as a cheap self-check)
+          #   rung 2: toolchain-original exe — rustc_driver-<hash>.dll sits
+          #           next to it in the toolchain bin dir → executes. Install
+          #           via PATH to the toolchain bin dir and DROP the copy (a
+          #           broken copy earlier on PATH would shadow the working
+          #           one).
+          #   rung 3: both fail — PowerShell loader diagnostics (Win32 error
+          #           text names the exact missing module) + rustup-mediated
+          #           probe, then fail the step.
+          # Defender exclusion kept defensively for future images where
+          # realtime scanning may be on again (non-fatal).
           powershell -NoProfile -Command "Add-MpPreference -ExclusionPath \"$(cygpath -w "${HOME}/.cargo/bin")\" -ErrorAction SilentlyContinue" \
-            || echo "Defender exclusion for ~/.cargo/bin not applied (non-fatal; retry warm-up covers the race)"
+            || echo "Defender exclusion for ~/.cargo/bin not applied (non-fatal)"
+          ra_msys="$(cygpath -u "${ra}")"
+          ra_dir_msys="$(dirname "${ra_msys}")"
+          ra_win="$(cygpath -w "${ra_msys}")"
+          copy_msys="${HOME}/.cargo/bin/rust-analyzer.exe"
+          copy_win="$(cygpath -w "${copy_msys}")"
           verify_exec() {
             local label="$1"; shift
-            local attempt
+            local attempt rc
             for attempt in 1 2 3; do
               if "$@" >/dev/null 2>&1; then
                 echo "verify ${label}: OK (attempt ${attempt})"
                 return 0
+              else
+                rc=$?
+                echo "verify ${label}: attempt ${attempt} failed (exit ${rc}), retrying after 5s"
               fi
-              echo "verify ${label}: attempt ${attempt} failed (exit $?), retrying after 5s"
               sleep 5
             done
             return 1
           }
-          verify_exec "copied exe (absolute path)" "${HOME}/.cargo/bin/rust-analyzer.exe" --version || {
-            echo "::error::copied rust-analyzer.exe still fails to execute after 3 attempts — loader-level diagnosis:"
+          ps_exec() {
+            # PowerShell wraps a CreateProcess/loader failure with the Win32
+            # error text (e.g. "The specified module could not be found
+            # (0x8007007E)") — this names the missing-DLL class that bash's
+            # 127 cannot. Heredoc via stdin avoids MSYS argv re-quoting.
+            local label="$1" win="$2"
+            powershell -NoProfile -Command - <<PS_EOF
+          & '${win}' --version
+          if (\$?) { exit 0 } else { Write-Host "SPAWN FAILED (${label})"; exit 1 }
+          PS_EOF
+          }
+          if verify_exec "copied exe (absolute path)" "${copy_msys}" --version; then
+            echo "MECHANISM: copied exe in ~/.cargo/bin executes"
+          elif verify_exec "toolchain original exe" "${ra_msys}" --version; then
+            echo "MECHANISM: toolchain-bin exe executes but the ~/.cargo/bin copy does not — installing via PATH to the toolchain bin dir and dropping the copy"
+            rm -f "${copy_msys}"
+            cygpath -w "${ra_dir_msys}" >> "${GITHUB_PATH}"
+            export PATH="${ra_dir_msys}:${PATH}"
+          else
+            echo "::error::rust-analyzer.exe fails to execute from both the copy and the toolchain bin — Win32 loader diagnostics:"
             echo "--- copy integrity: sha256 of copy vs toolchain original ---"
-            sha256sum "${HOME}/.cargo/bin/rust-analyzer.exe" "$(cygpath -u "${ra}")" || true
-            echo "--- same copy via cmd //c (the Windows loader error, e.g. missing DLL name / access denied, lands here) ---"
-            copy_win="$(cygpath -w "${HOME}/.cargo/bin/rust-analyzer.exe")"
-            cmd //c "\"${copy_win}\" --version" || echo "cmd //c copy: exit $?"
-            echo "--- original toolchain exe (not the copy) via cmd //c ---"
-            ra_win="$(cygpath -w "$(cygpath -u "${ra}")")"
-            cmd //c "\"${ra_win}\" --version" || echo "cmd //c original: exit $?"
-            echo "--- Defender real-time protection status ---"
+            sha256sum "${copy_msys}" "${ra_msys}" || true
+            echo "--- PowerShell exec: copy ---"
+            ps_exec "copy" "${copy_win}" || echo "ps copy: exit $?"
+            echo "--- PowerShell exec: toolchain original ---"
+            ps_exec "original" "${ra_win}" || echo "ps original: exit $?"
+            echo "--- rustup-mediated exec (toolchain env) ---"
+            rustup run stable rust-analyzer --version || echo "rustup run: exit $?"
+            echo "--- Defender real-time protection (known OFF on this image; kept for the record) ---"
             powershell -NoProfile -Command "Get-MpComputerStatus | Select-Object -ExpandProperty RealTimeProtectionEnabled" || true
             exit 1
-          }
-          # Print the warmed-up version once (visible diagnostics) and verify
-          # the bare name resolves the same way the test probe does.
-          "${HOME}/.cargo/bin/rust-analyzer.exe" --version
+          fi
+          # Shared tail: the bare name must resolve and execute the same way
+          # the test probe does; command -v prints the resolved path.
           verify_exec "bare name on PATH" rust-analyzer --version
+          rust-analyzer --version
           command -v rust-analyzer
           # pyright ships pyright-langserver.cmd via npm -g; the runner's npm
           # global prefix is on PATH.
@@ -410,10 +447,12 @@ jobs:
         # servers deterministically, so the assertion covers the whole matrix,
         # Windows included. (The 2026-08-15 windows-only narrowing to the
         # clangd set is REMOVED: the windows install step now fails fast and
-        # prints diagnostics for the rust-analyzer copy instead of silently
-        # no-oping — including a Defender-race retry warm-up around the
-        # first exec of the fresh exe, which the 2026-08-16 fail-fast run
-        # proved was the failing link (fresh copy, exit 127 on first exec).
+        # prints diagnostics for the rust-analyzer install instead of
+        # silently no-oping — the root cause, verified binary-level on
+        # 2026-08-16, is that the rustup rust-analyzer component links the
+        # toolchain's rustc_driver-<hash>.dll, so the ~/.cargo/bin copy
+        # loses DLL adjacency and never executes (bash 127); the step now
+        # installs via PATH to the toolchain bin dir where the DLL sits.
         # The rust suite is asserted on Windows again; if it still skips
         # there, the leg goes red and the skip-reason echo in
         # assert-live-cases.sh names the failing probe.)
