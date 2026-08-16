@@ -137,12 +137,54 @@ jobs:
           fi
           cp "$(cygpath -u "${ra}")" "${HOME}/.cargo/bin/rust-analyzer.exe"
           ls -l "${HOME}/.cargo/bin/rust-analyzer.exe"
-          # Fail-fast verification: the copy must EXECUTE, not just exist
-          # (catches a non-self-contained binary), and must resolve as a bare
-          # name the same way the test probe does.
+          # 2026-08-16 (first fail-fast run): the copy itself succeeds
+          # (40,010,240-byte exe lands in ~/.cargo/bin) but the FIRST exec of
+          # the fresh copy fails (exit 127) — the classic windows-runner
+          # race: Defender's real-time scan (MpEngine) grabs freshly written
+          # PE files at first launch and the spawn fails (established on GHA
+          # windows runners; pytorch's generated windows workflows and
+          # nowledge-co/con-terminal#42 hit "FileNotFound" on just-built exes
+          # and fix it with Set-MpPreference + ExclusionPath — runners are
+          # Administrator). Mitigation: a non-fatal Defender exclusion for
+          # ~/.cargo/bin (defensive — Defender may be off on the image) PLUS
+          # a retry warm-up, which is the primary mechanism; a persistent
+          # failure still fails the step, with loader-level diagnostics that
+          # name the mechanism (copy integrity, loader error via cmd //c,
+          # copy-vs-original comparison, Defender state).
+          powershell -NoProfile -Command "Add-MpPreference -ExclusionPath \"$(cygpath -w "${HOME}/.cargo/bin")\" -ErrorAction SilentlyContinue" \
+            || echo "Defender exclusion for ~/.cargo/bin not applied (non-fatal; retry warm-up covers the race)"
+          verify_exec() {
+            local label="$1"; shift
+            local attempt
+            for attempt in 1 2 3; do
+              if "$@" >/dev/null 2>&1; then
+                echo "verify ${label}: OK (attempt ${attempt})"
+                return 0
+              fi
+              echo "verify ${label}: attempt ${attempt} failed (exit $?), retrying after 5s"
+              sleep 5
+            done
+            return 1
+          }
+          verify_exec "copied exe (absolute path)" "${HOME}/.cargo/bin/rust-analyzer.exe" --version || {
+            echo "::error::copied rust-analyzer.exe still fails to execute after 3 attempts — loader-level diagnosis:"
+            echo "--- copy integrity: sha256 of copy vs toolchain original ---"
+            sha256sum "${HOME}/.cargo/bin/rust-analyzer.exe" "$(cygpath -u "${ra}")" || true
+            echo "--- same copy via cmd //c (the Windows loader error, e.g. missing DLL name / access denied, lands here) ---"
+            copy_win="$(cygpath -w "${HOME}/.cargo/bin/rust-analyzer.exe")"
+            cmd //c "\"${copy_win}\" --version" || echo "cmd //c copy: exit $?"
+            echo "--- original toolchain exe (not the copy) via cmd //c ---"
+            ra_win="$(cygpath -w "$(cygpath -u "${ra}")")"
+            cmd //c "\"${ra_win}\" --version" || echo "cmd //c original: exit $?"
+            echo "--- Defender real-time protection status ---"
+            powershell -NoProfile -Command "Get-MpComputerStatus | Select-Object -ExpandProperty RealTimeProtectionEnabled" || true
+            exit 1
+          }
+          # Print the warmed-up version once (visible diagnostics) and verify
+          # the bare name resolves the same way the test probe does.
           "${HOME}/.cargo/bin/rust-analyzer.exe" --version
+          verify_exec "bare name on PATH" rust-analyzer --version
           command -v rust-analyzer
-          rust-analyzer --version
           # pyright ships pyright-langserver.cmd via npm -g; the runner's npm
           # global prefix is on PATH.
           npm i -g pyright
@@ -369,8 +411,11 @@ jobs:
         # Windows included. (The 2026-08-15 windows-only narrowing to the
         # clangd set is REMOVED: the windows install step now fails fast and
         # prints diagnostics for the rust-analyzer copy instead of silently
-        # no-oping, so the rust suite is asserted on Windows again — if it
-        # still skips there, the leg goes red and the skip-reason echo in
+        # no-oping — including a Defender-race retry warm-up around the
+        # first exec of the fresh exe, which the 2026-08-16 fail-fast run
+        # proved was the failing link (fresh copy, exit 127 on first exec).
+        # The rust suite is asserted on Windows again; if it still skips
+        # there, the leg goes red and the skip-reason echo in
         # assert-live-cases.sh names the failing probe.)
         run: |
           fail=0
